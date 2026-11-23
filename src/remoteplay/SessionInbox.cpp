@@ -42,6 +42,12 @@ bool SessionInbox::decodedFrameReady(Generation g){
     s.state=SessionState::Streaming;return true;
 }
 std::optional<QueuedVideo> SessionInbox::tryVideo(HostTime now){auto& s=*shared_;std::lock_guard l(s.mutex);if(!s.accepting)return {};return s.video.tryPop(now);}
+SessionInbox::VideoWait SessionInbox::waitVideo(std::chrono::milliseconds timeout){
+    // VideoIngress synchronizes itself. Waiting under the inbox mutex would block the callbacks that push.
+    auto& video=shared_->video;
+    if(video.waitForData(timeout))return VideoWait::Data;
+    return video.closed()?VideoWait::Closed:VideoWait::Timeout;
+}
 std::optional<PcmBlock> SessionInbox::tryAudio(){auto& s=*shared_;std::lock_guard l(s.mutex);if(!s.accepting)return {};return s.audio.tryPop();}
 bool SessionInbox::takeIdrRequest(HostTime now){auto& s=*shared_;std::lock_guard l(s.mutex);return s.accepting&&s.video.takeIdrRequest(now);}
 void SessionInbox::decodeFailed(Generation g){auto& s=*shared_;std::lock_guard l(s.mutex);if(s.accepting&&s.generation==g)s.video.requireKeyframe();}

@@ -95,6 +95,7 @@ bool VideoIngress::takeIdrRequest(HostTime now) {
 }
 void VideoIngress::requireKeyframe(){std::lock_guard lock(mutex_);if(!closed_)recoverLocked();}
 void VideoIngress::close(){std::lock_guard lock(mutex_);closed_=true;queue_.clear();config_.reset();payloadBytes_=0;pendingIdr_=false;updateStatsLocked();cv_.notify_all();}
+bool VideoIngress::closed()const{std::lock_guard lock(mutex_);return closed_;}
 VideoQueueStats VideoIngress::stats()const{std::lock_guard lock(mutex_);return stats_;}
 
 AudioIngress::AudioIngress(std::uint32_t maxMs):maxMs_(maxMs){if(maxMs<10||maxMs>200)throw std::invalid_argument("Audio buffer must be 10..200 ms");}

@@ -222,7 +222,11 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
                         recovery_.message=snapshot.state==remoteplay::SessionState::LoginPinRequired?L"等待 PS5 登录 PIN 超时，请重新连接。":native.startupRetryAllowed?L"PS5 仍被串流会话占用，请结束其他串流或稍后重试；无需重新配对。":!native.automaticRetryAllowed?L"PS5 已结束或拒绝串流，请检查主机状态后重新连接。":L"PS5 串流未恢复，请检查主机及网络后点击连接；无需重新配对。";
                         recovery_.message+=std::format(L"（终止码 {} / 错误 {}）",native.lastQuitReason,snapshot.errorCode);break;
                     }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    // Wake when the next video sample is queued instead of sleeping a whole timer tick
+                    // (Sleep(1) lasts 1 to 2 ms with a raised timer resolution and up to 15.6 ms without).
+                    // A closed inbox (stopping, failed) returns at once, so it keeps the old sleep.
+                    if(source.waitVideo(std::chrono::milliseconds(1))==remoteplay::SessionInbox::VideoWait::Closed)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
             }
         }

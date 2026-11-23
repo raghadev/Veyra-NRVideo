@@ -42,6 +42,11 @@ public:
     void finishStop(); // Only after actual backend stop/join, not from a callback.
     bool decodedFrameReady(Generation);
     std::optional<QueuedVideo> tryVideo(HostTime now);
+    // Blocks until a video sample is queued (Data), the timeout passes, or nothing can arrive any
+    // more (Closed: not begun, stopping or failed). Lets the decode owner wake when a frame arrives
+    // instead of sleeping a whole timer tick. Never holds the inbox mutex while waiting.
+    enum class VideoWait {Data,Timeout,Closed};
+    VideoWait waitVideo(std::chrono::milliseconds timeout);
     std::optional<PcmBlock> tryAudio();
     bool takeIdrRequest(HostTime now);
     void decodeFailed(Generation);

@@ -35,6 +35,7 @@ public:
     PushStatus push(VideoSample,HostTime now);
     std::optional<QueuedVideo> tryPop(HostTime now);
     bool waitForData(std::chrono::milliseconds timeout);
+    bool closed()const;
     // Poll from the protocol OWNER, never request an IDR while holding a C callback's lock.
     bool takeIdrRequest(HostTime now);
     void requireKeyframe(); // Decoder reports fatal error / lost references.

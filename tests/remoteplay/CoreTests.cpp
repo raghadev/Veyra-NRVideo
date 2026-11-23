@@ -209,6 +209,45 @@ TEST(recovery_intermittent_frames_do_not_renew_budget){
     for(int64_t t=7100;t<150000;t+=1000)CHECK(!r.frame(t));
     CHECK(r.episodeRetries()==1);CHECK(r.reconnects()==1);
 }
+// --- Decode owner wake-up: wait for the next video sample instead of sleeping a timer tick ---
+TEST(inbox_wait_video_wakes_on_push){
+    SessionInbox q;auto t=q.begin(monotonic100ns());
+    CHECK(t.video(config(t.generation(),monotonic100ns()))); // codec config alone is not a frame to decode
+    bool accepted=false;
+    std::thread producer([&]{std::this_thread::sleep_for(std::chrono::milliseconds(30));accepted=t.video(frame(1,true,monotonic100ns(),t.generation()));});
+    const auto start=std::chrono::steady_clock::now();
+    const auto result=q.waitVideo(std::chrono::milliseconds(3000));
+    const auto elapsed=std::chrono::steady_clock::now()-start;
+    producer.join();
+    CHECK(accepted);CHECK(result==SessionInbox::VideoWait::Data);
+    CHECK(elapsed>=std::chrono::milliseconds(20));  // it really waited for the producer
+    CHECK(elapsed<std::chrono::milliseconds(1500)); // and woke on the push, not on the 3 s timeout
+    CHECK(q.tryVideo(monotonic100ns()).has_value());
+}
+TEST(inbox_wait_video_data_already_queued){
+    SessionInbox q;auto t=q.begin(monotonic100ns());
+    CHECK(t.video(config(t.generation(),monotonic100ns())));CHECK(t.video(frame(1,true,monotonic100ns(),t.generation())));
+    const auto start=std::chrono::steady_clock::now();
+    CHECK(q.waitVideo(std::chrono::milliseconds(3000))==SessionInbox::VideoWait::Data); // no lost wake-up
+    CHECK(std::chrono::steady_clock::now()-start<std::chrono::milliseconds(1000));
+}
+TEST(inbox_wait_video_times_out_without_a_frame){
+    SessionInbox q;auto t=q.begin(monotonic100ns());
+    CHECK(t.video(config(t.generation(),monotonic100ns())));
+    const auto start=std::chrono::steady_clock::now();
+    CHECK(q.waitVideo(std::chrono::milliseconds(40))==SessionInbox::VideoWait::Timeout);
+    CHECK(std::chrono::steady_clock::now()-start>=std::chrono::milliseconds(35));
+}
+TEST(inbox_wait_video_reports_closed_at_once){
+    SessionInbox q; // never begun: nothing can arrive, the owner must fall back to its own sleep
+    auto start=std::chrono::steady_clock::now();
+    CHECK(q.waitVideo(std::chrono::milliseconds(3000))==SessionInbox::VideoWait::Closed);
+    CHECK(std::chrono::steady_clock::now()-start<std::chrono::milliseconds(1000));
+    auto t=q.begin(monotonic100ns());t.failed(32); // failed session: media closed
+    start=std::chrono::steady_clock::now();
+    CHECK(q.waitVideo(std::chrono::milliseconds(3000))==SessionInbox::VideoWait::Closed);
+    CHECK(std::chrono::steady_clock::now()-start<std::chrono::milliseconds(1000));
+}
 // --- PS5 stream panel numbers (NetworkReadout) ---
 bool near(std::optional<double> v,double expected){return v&&*v>expected-1e-9&&*v<expected+1e-9;}
 TEST(network_readout_invalid_is_all_dashes){

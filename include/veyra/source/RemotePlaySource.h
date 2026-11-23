@@ -59,6 +59,10 @@ public:
     remoteplay::SessionInbox::Snapshot sessionSnapshot() const;
     std::shared_ptr<const remoteplay::SessionInbox> telemetryInbox()const{return inbox_;}
     void recoverVideo(){flushDecoder();if(token_)inbox_->decodeFailed(token_->generation());}
+    // Session owner only: block until the next video sample is queued, the timeout passes or the inbox closes.
+    remoteplay::SessionInbox::VideoWait waitVideo(std::chrono::milliseconds timeout){
+        return inbox_?inbox_->waitVideo(timeout):remoteplay::SessionInbox::VideoWait::Closed;
+    }
 
     const SourceInfo& info() const override { return info_; }
     SourceReadStatus read(pipeline::FramePacket& out, const AVFrame** decodedFrame) override;
