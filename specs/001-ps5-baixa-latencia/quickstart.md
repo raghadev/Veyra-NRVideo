@@ -13,7 +13,7 @@ cmake -S . -B build -G Ninja -DCHIAKI_ENABLE_GUI=OFF -DCHIAKI_ENABLE_CLI=OFF -DC
 cmake --build build && ./build/test/chiaki-unit
 ```
 
-Esperado (medido em 2026-11-23, macOS): `118 of 118 (100%) tests successful`. Com
+Esperado (medido em 2026-11-23, macOS): `125 of 125 (100%) tests successful`. Com
 `CHIAKI_TEST_REPORT=1 ./build/test/chiaki-unit --show-stderr /chiaki/avreorder/sim`:
 
 ```text
@@ -21,6 +21,12 @@ loss 1%: lost=1732 legacy extra/loss=12921 us adaptive extra/loss=0 us delivered
 loss 1%: reported to the console legacy=1737 adaptive=1732 (true loss 1732) queue drops legacy=5 adaptive=0
 reorder 5% up to 3 ms: delivered=3600 of 3600 fec_skips=4025 timeout_skips=0 extra/frame=0 us late-after-fec=4151 (2.40% ...)
 reorder 5% up to 3 ms: reported to the console legacy=0 adaptive=0
+```
+
+E com `CHIAKI_TEST_REPORT=1 ./build/test/chiaki-unit --show-stderr /chiaki/takion_socket`:
+
+```text
+rcvbuf: burst of 300 packets (420 kB) while nobody reads: old 100 kB buffer kept 71, new 4096 kB buffer kept 300
 ```
 
 No macOS, `-DPYTHON_EXECUTABLE` precisa apontar para um Python com `protobuf` e `grpcio-tools` (gerador
@@ -33,7 +39,7 @@ cmake -S services/remoteplay-probe -B out/rp -G Ninja -DVEYRA_RP_BUILD_NATIVE=OF
 cmake --build out/rp && ctest --test-dir out/rp --output-on-failure
 ```
 
-Esperado: `91 tests passed`. No clang do macOS o código antigo do Veyra não compila com `-Werror`; acrescente
+Esperado: `95 tests passed`. No clang do macOS o código antigo do Veyra não compila com `-Werror`; acrescente
 `"-DCMAKE_CXX_FLAGS=-Wno-error=missing-field-initializers -Wno-error=implicit-int-float-conversion -Wno-error=sign-conversion"`
 ao primeiro comando (no MSVC do produto não é preciso).
 
@@ -43,6 +49,7 @@ ao primeiro comando (no MSVC do produto não é preciso).
    precisa imprimir `CHIAKI_STAGE_EXACT_PATCHES_VERIFIED`.
 2. Abrir uma sessão PS5, apertar Ctrl+Alt+Shift+S e jogar 5 minutos no Wi-Fi.
 3. Anotar no painel: perdas resolvidas na hora, esperas por tempo esgotado, espera por segundo, espera
-   vigente; e no registro, a linha `remoteplay-wifi`.
+   vigente; e no registro, as linhas `remoteplay-wifi`, `remoteplay-reorder` e `remoteplay-progress`
+   (esta já traz a espera na fila e o tempo de decodificação medidos pelo Veyra).
 4. Repetir com o build compilado com `CHIAKI_AV_REORDER_ADAPTIVE_DEFAULT=0` (comportamento antigo) para
    comparar a "espera por segundo" nas mesmas condições.

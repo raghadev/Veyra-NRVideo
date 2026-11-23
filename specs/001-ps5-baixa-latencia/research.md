@@ -96,3 +96,49 @@ com os patches 0001 a 0004 do Veyra aplicados.
 - **Limite conhecido** (segundo crítico): com atrasos acima de 16 ms a nova pode informar um pouco mais que a
   antiga (+0,31 pp com atrasos até 20 ms); pacote duplicado depois de pulo por correção pode ser creditado
   duas vezes (no máximo 1 unidade por duplicata, teto 64). Ambos registrados, nenhum muda decisão.
+
+
+## R9. Pesquisa funda de 23/11 (GitHub do chiaki-ng, Moonlight, FFmpeg, medições) e leitura do Veyra
+
+**Piso que nenhum código do PC muda**
+- O console limita o Remote Play a 1080p60 (mantenedor do chiaki-ng, issue 639: "sony caps the server
+  running on the PS to 1080p"); ninguém relata 120 fps, 1440p ou 4K, nem no PS5 Pro.
+- Atraso medido de ponta a ponta: PS Portal 66 a 83 ms atrás da TV (Digital Foundry, lido de segunda
+  mão); chiaki-ng 1.10.0 cerca de 58 ms atrás do monitor ligado direto, e uma versão de desenvolvimento
+  108 ms, filmado a 120 fps (issue 807). A diferença de 50 ms era só o jeito de mostrar o quadro.
+
+**Hipóteses eliminadas com prova**
+- Decodificador segurando quadro: não acontece. Cabeçalhos reais do PS5 (dos testes do chiaki, lidos com
+  `ffmpeg -bsf:v trace_headers`): H.264 com `bitstream_restriction_flag=1`, `max_num_reorder_frames=0`,
+  `pic_order_cnt_type=2`; HEVC com `sps_max_num_reorder_pics=0`. No FFmpeg atual `AV_CODEC_FLAG_LOW_DELAY`
+  nem é lido pelos decodificadores h264 e hevc (só desliga frame threading), e aqui `thread_count=1`.
+- Motor atrasando a exibição do stream: sem gerador de quadros o prazo é "assim que ficar pronto"
+  (`EngineController.cpp`, `liveTimeline.resetPair(..., options.fg&&!fgHeld?pairDelay:0, ...)`). Com
+  gerador por interpolação o atraso de um quadro de origem é inerente.
+
+**Achados que viraram código**
+- `SO_RCVBUF` do takion era a janela de dados anunciada, 100 kB (`TAKION_A_RWND 0x19000`), menor que um
+  quadro grande; upstream discute o mesmo em PR 873 e 817 (não fundidos). Patch 0008.
+- `packetstats.c`: `seq_max - seq_min` de dois valores de 16 bits promovidos a int; o relatório da virada
+  do índice de áudio (a cada ~655 s) dizia ~2^64 perdidos. O console reduz a taxa de vídeo quando ouve
+  perda (PR 157, PR 871 fechado sem fundir). Gêmeo do defeito do patch 0005, que a minha busca de gêmeos
+  anterior não pegou porque só procurava somas. Patch 0007.
+- Mesma função, achado medido pelo crítico da segunda leva: a regra original
+  `seq_received > seq_diff ? seq_diff : seq_diff - seq_received` dava o intervalo inteiro como perdido
+  quando chegava um quadro atrasado (10 recebidos + 1 atrasado = 10 "perdidos"). Passou a ser zero perda
+  quando chegam mais quadros do que o intervalo comporta. Também no patch 0007, com teste próprio.
+- Laço dono da sessão dormia `sleep_for(1ms)` sem quadro pronto. Com o relógio do Windows afinado dura 1 a
+  2 ms; sem afinar, até 15,6 ms (o próprio autor anotou isso no laço de só-controle e usou timer de alta
+  resolução lá). O Qt 6.8 afina o relógio enquanto houver QTimer de até 20 ms ativo
+  (`qeventdispatcher_win.cpp`: `timeSetEvent(interval, 1, ...)`), então o caso comum é 1 a 2 ms. Agora o
+  laço espera na variável de condição da fila de vídeo.
+
+**Candidatos não feitos (fase 2)**
+- Painel: mostrar espera na fila e tempo de decodificação que o Veyra já mede (`ingressWaitMeanMs`,
+  `decodeMeanMs`, `decodeP95Ms`) e o tempo chegada até exibição, para provar ganho no hardware real.
+- Leitura do controle na interface a cada 8 ms no PS5 (Xbox e PC usam 4 ms).
+- Evento de chegada para o motor (hoje ele confere a cada até 1 ms).
+- Fora do código: Moonlight evita `SetMaximumFrameLatency(1)` com waitable porque o Present bloqueia no
+  DWM; vale medir no Veyra com PresentMon antes de mexer. Saída em 120 Hz com VRR reduz a varredura.
+- Controle pareado direto no PS5 durante o Remote Play: sem confirmação para PS5 (no PS4 o console
+  fechava a sessão); é teste de 5 minutos em casa. Ganho estimado pequeno (5 a 10 ms).

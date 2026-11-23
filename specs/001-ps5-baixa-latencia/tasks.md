@@ -85,6 +85,16 @@
 - [x] T034 Consertar o que o crítico achar com evidência; rejulgar se grave (P3: travessão no painel trocado por hífen, spec do pacote duplicado, contrato sem função inexistente; lacuna declarada virou T036 a T038)
 - [x] T035 Atualizar quickstart.md com os comandos e números reais; registrar no WORKLOG do Veyra o que foi e o que não foi verificado
 
+## Phase 7: Segunda leva (pesquisa funda de 23/11)
+
+- [x] T040 Pesquisa funda com 3 agentes (chiaki-ng no GitHub; decodificar e exibir sem fila; limites e medições do PS5) e leitura do caminho de vídeo do Veyra; hipóteses do decodificador e do motor eliminadas com prova (research.md R9)
+- [x] T041 [US1] Testes `packet_stats/seq_loss`, `seq_wrap`, `seq_wrap_with_loss` (vermelhos na virada antes do código) e correção da diferença de 16 bits em `packetstats.c`; patch 0007
+- [x] T042 [US1] Testes `takion_socket/rcvbuf_holds_frame_burst`, `rcvbuf_minimum`, `connect_uses_large_rcvbuf` e `chiaki_takion_socket_set_rcvbuf` (4 MiB com redução); patch 0008
+- [x] T043 [US1] `SessionInbox::waitVideo` + `VideoIngress::closed` com 4 testes; laço da sessão troca o sono de 1 ms pela espera (arquivo só de Windows, conferido com cabeçalhos do Windows, não executado)
+- [x] T044 Sabotagens S12 a S15 (chiaki) e V9 a V12 (Veyra); cadeia limpa com 8 patches e verificador
+- [x] T045 Crítico de contexto limpo na segunda leva (aprovado, sem P0/P1). O P2 que ele mediu (quadro de áudio atrasado virava perda total no relatório) foi corrigido no patch 0007 com o teste `packet_stats/late_frame_is_not_loss` e a sabotagem S16; verificado por teste, sem nova rodada de crítico
+- [ ] T046 Fase 2 (aguarda decisão): painel com tempos reais do PC, leitura do controle a 4 ms, compilar e medir no Acer com o PS5
+
 ## Dependencies & Execution Order
 
 - Phase 2 depende de Phase 1; US1 depende de Phase 2.

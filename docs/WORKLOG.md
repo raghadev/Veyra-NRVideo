@@ -8,6 +8,8 @@ Veyra 侧：可移植的 `NetworkReadout` 计算 PS5 面板数值，`ChiakiBacke
 
 验证（macOS，非产品平台）：钉住提交 0e16950 依次应用 0001 至 0006，`verify-chiaki-stage.py` 输出 `CHIAKI_STAGE_EXACT_PATCHES_VERIFIED`；chiaki 单元测试 118/118（原 102 项加新 16 项）；模拟 60 fps、1% 随机丢包时，每个丢包造成的额外滞留由旧策略 12921 µs 降到 0 µs，交付帧数相同（3600/3600）；5% 的包重排序至多 3 ms 时 3600/3600 帧完整、零超时跳过，4151 个迟到包（2.40%）记回已收，按帧统计后向主机报告的丢包与旧策略相同（均为 0）；1% 真实丢包时新策略报告 1732（等于真实丢包），旧策略报告 1737，因为 16 ms 等待使 64 格队列溢出并丢弃了 5 个正常包。重排序超过 16 ms 时新策略报告的丢包可能略高于旧策略（审查者模拟至多 20 ms 延迟时高 0.31 个百分点）。11 项 chiaki 破坏植入和 8 项 Veyra 破坏植入均被测试捕获。`services/remoteplay-probe` 91/91（Apple clang 下需对既有代码放宽三项 -Werror：missing-field-initializers、implicit-int-float-conversion、sign-conversion）。mingw-w64 对改动的 chiaki 文件、`ChiakiBackend.cpp`、`RemotePlaySessionSource.cpp`、`WifiTuning*.cpp` 做了 Windows 头文件检查。
 
+同日第二批（深入调研后）：补丁 `0007-chiaki-packet-stats-16bit-wrap.patch` 修正 `packetstats.c` 中两个 16 位序号相减被提升为 int 的问题（音频帧序号约每 655 秒回绕一次，回绕那次报告的丢包数约为 2^64，主机收到丢包报告会降低码率，见 chiaki-ng #157、#871）；补丁 `0008-chiaki-udp-receive-buffer.patch` 把 takion 套接字接收缓冲从 100 kB（对外通告的数据窗口）提高到 4 MiB（系统拒绝时减半，通告窗口不变，见 chiaki-ng #873、#817），本机回环实测：无人读取时到达的 300 个包（420 kB）旧缓冲只留下 71 个，新缓冲 300 个全部保留。Veyra 侧 `SessionInbox::waitVideo` 让会话线程在视频样本入队时立即唤醒，取代 `sleep_for(1ms)`（收件箱关闭时保留原来的睡眠）。同一补丁还修正了迟到或重复的音频帧（收到的帧数多于区间）会把整个区间报成丢包的旧规则。chiaki 单元测试 125/125，可移植测试 95/95；破坏植入 chiaki 16 项、Veyra 12 项全部被测试捕获；八个补丁在干净的钉住提交上通过 `verify-chiaki-stage.py`。调研排除了两个假设：PS5 真实码流头（H.264 `max_num_reorder_frames=0`、HEVC `sps_max_num_reorder_pics=0`）下解码器不滞留帧；未开补帧时引擎对串流按就绪即显示。会话循环的改动只做了 mingw 头文件语法检查，未运行。
+
 未验证：没有在 Windows/MSVC 完整构建（缺 NGX 专有 SDK），`QmlPlayerBridge` 与 QML 没有实际运行（只做了 qmlformat 语法检查），没有 PS5 实机测试，真实延迟收益和 Wi-Fi 调整效果未测。规格、计划和任务在 `specs/001-ps5-baixa-latencia/`。
 
 ## 2026-11-20 Veyra 2.2.0 正式发行

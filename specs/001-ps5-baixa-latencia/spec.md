@@ -139,6 +139,16 @@ conectadas, que tudo é desfeito ao fim e que falhas não impedem a sessão.
   16 ms do momento em que faltou, MUST contar como recebido no relatório de perda que vai ao console (a
   política antiga o teria entregue; contá-lo como perdido faria o console baixar a qualidade à toa).
 
+- **FR-014**: O relatório de perda ao console MUST continuar correto quando o contador de quadros de
+  áudio dá a volta (65535 para 0); antes, o relatório dessa virada dizia cerca de 2^64 pacotes perdidos.
+  Um quadro de áudio que chega atrasado, depois do relatório que o cobria, MUST contar como recebido a
+  mais, nunca transformar o intervalo inteiro em perda.
+- **FR-015**: O socket de vídeo MUST ter espaço de recepção para um quadro grande inteiro (alvo de 4 MiB,
+  reduzindo pela metade enquanto o sistema recusar, nunca abaixo do valor antigo), sem mudar a janela
+  anunciada ao console.
+- **FR-016**: O laço que decodifica o vídeo do PS5 MUST acordar quando um quadro chega, em vez de dormir
+  um intervalo fixo entre checagens; com a caixa de entrada fechada (parando ou em falha) vale o sono antigo.
+
 ### Key Entities
 
 - **Lacuna de vídeo**: posição na sequência de pacotes de vídeo que falta quando o próximo da fila
@@ -175,6 +185,15 @@ conectadas, que tudo é desfeito ao fim e que falhas não impedem a sessão.
   a mesma da política antiga (zero); com perda real, é exatamente a perda real. Atrasos acima de 16 ms
   podem fazer a nova informar um pouco mais que a antiga (medido pelo crítico: +0,31 ponto percentual com
   atrasos de até 20 ms), porque a fila travada da antiga esticava a espera de buracos seguidos.
+
+- **SC-009**: Numa rajada de 300 pacotes (420 kB) que chega sem ninguém ler, o buffer antigo (100 kB)
+  guarda 71 pacotes e o novo guarda os 300 (medido em macOS; em sistema que limita o buffer o teste se
+  declara pulado).
+- **SC-010**: No relatório que cobre a virada do contador, 10 quadros recebidos dão 0 perdidos; com um
+  quadro realmente perdido na virada, dá 1. Dez quadros recebidos mais um atrasado do relatório anterior
+  dão 11 recebidos e 0 perdidos (antes: 10 perdidos).
+- **SC-011**: A espera por vídeo acorda na chegada do quadro (bem antes do tempo limite), não perde
+  aviso de quadro que já estava na fila, respeita o tempo limite e avisa na hora quando a caixa fechou.
 
 ## Assumptions
 
