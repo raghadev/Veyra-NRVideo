@@ -46,5 +46,22 @@
     "lib/src/reorderqueue.c",
     "test/reorderqueue.c"
   ],
-  "reorder_queue_wrap_note": "seq_num_16_add promoted to int and returned 65537 for 65535+2; a packet right after the 16 bit wrap was dropped while the queue held a gap. Not fixed upstream as of chiaki-ng 43728af (2026-11-03)."
+  "reorder_queue_wrap_note": "seq_num_16_add promoted to int and returned 65537 for 65535+2; a packet right after the 16 bit wrap was dropped while the queue held a gap. Not fixed upstream as of chiaki-ng 43728af (2026-11-03).",
+  "av_reorder_patch": "patches/0006-chiaki-av-reorder.patch",
+  "av_reorder_scope": [
+    "lib/include/chiaki/avreorder.h",
+    "lib/src/avreorder.c",
+    "lib/src/packetstats.c",
+    "lib/include/chiaki/packetstats.h",
+    "lib/include/chiaki/takion.h",
+    "lib/src/takion.c",
+    "lib/include/chiaki/streamconnection.h",
+    "lib/src/streamconnection.c",
+    "lib/src/senkusha.c",
+    "lib/CMakeLists.txt",
+    "test/CMakeLists.txt",
+    "test/main.c",
+    "test/avreorder.c"
+  ],
+  "av_reorder_note": "Video reorder wait policy: skip a missing packet at once when FEC can rebuild its frame, otherwise wait an adaptive 2..16 ms window; a reordered packet that arrives after a FEC skip within 16 ms is credited back as received in packet_stats so the loss report sent to the console matches the old policy; statistics published through chiaki_stream_connection_av_reorder_stats. CHIAKI_AV_REORDER_ADAPTIVE_DEFAULT=0 restores the old fixed 16 ms wait."
 }

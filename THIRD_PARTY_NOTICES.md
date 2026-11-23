@@ -53,6 +53,14 @@ sequence addition of `lib/src/reorderqueue.c` (operands promoted to `int`, so 65
 65537); with a gap pending at the wraparound the queue dropped the next valid packet. Adds the
 regression test `/reorder_queue/reorder_queue_16_wrap`.
 
+`scripts/remoteplay/patches/0006-chiaki-av-reorder.patch` adds `lib/src/avreorder.c` and
+`lib/include/chiaki/avreorder.h` (new, AGPL-3.0-only with the OpenSSL exception like the rest of
+chiaki-ng) and wires them into `takion.c`/`takion.h`, `streamconnection.c`/`.h` and `senkusha.c`:
+a missing video packet is skipped immediately when FEC can rebuild its frame, otherwise it is waited
+for an adaptive 2 to 16 ms window instead of a fixed 16 ms. `lib/src/packetstats.c` gains a late-unit
+credit so a reordered packet that arrives after such a skip (within 16 ms) is not reported to the console
+as lost. Tests in `test/avreorder.c`. Both patches apply on the unchanged pin after patches 0001-0004.
+
 Source: https://github.com/chiaki-ng/chiaki-ng . License remains
 `LicenseRef-AGPL-3.0-only-OpenSSL`; see `licenses/remoteplay` and the upstream
 `COPYING`. The patch is an otherwise unchanged backport of the upstream change.
