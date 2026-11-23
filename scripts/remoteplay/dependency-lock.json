@@ -71,5 +71,14 @@
     "test/CMakeLists.txt",
     "test/main.c"
   ],
-  "packet_stats_wrap_note": "seq_max - seq_min of two 16 bit values promoted to int: the loss report covering the 16 bit wrap of the audio frame index (about every 11 minutes) claimed ~2^64 lost packets, and the console lowers its bitrate on reported loss (chiaki-ng #157, #871). Not fixed upstream as of chiaki-ng 43728af. The same patch stops a late or duplicate frame (more frames received than the range holds) from turning the whole range into reported loss."
+  "packet_stats_wrap_note": "seq_max - seq_min of two 16 bit values promoted to int: the loss report covering the 16 bit wrap of the audio frame index (about every 11 minutes) claimed ~2^64 lost packets, and the console lowers its bitrate on reported loss (chiaki-ng #157, #871). Not fixed upstream as of chiaki-ng 43728af. The same patch stops a late or duplicate frame (more frames received than the range holds) from turning the whole range into reported loss.",
+  "udp_receive_buffer_patch": "patches/0008-chiaki-udp-receive-buffer.patch",
+  "udp_receive_buffer_scope": [
+    "lib/include/chiaki/takion.h",
+    "lib/src/takion.c",
+    "test/takionsocket.c",
+    "test/CMakeLists.txt",
+    "test/main.c"
+  ],
+  "udp_receive_buffer_note": "SO_RCVBUF was the advertised data window (100 kB), smaller than one large video frame; the takion socket now asks for 4 MiB and halves while the system refuses (chiaki-ng #873, #817). The advertised a_rwnd is unchanged."
 }

@@ -64,7 +64,10 @@ as lost. Tests in `test/avreorder.c`. Both patches apply on the unchanged pin af
 `scripts/remoteplay/patches/0007-chiaki-packet-stats-16bit-wrap.patch` fixes the same 16 bit promotion
 in `lib/src/packetstats.c` (`seq_max - seq_min`): the loss report that covered the wrap of the audio
 frame index claimed about 2^64 lost packets, and a late or duplicate frame no longer turns the whole
-range into reported loss. Tests in `test/packetstats.c`. It applies after patch 0006.
+range into reported loss. `scripts/remoteplay/patches/0008-chiaki-udp-receive-buffer.patch`
+gives the takion socket a 4 MiB receive buffer (it was the 100 kB data window, smaller than one large
+video frame) through the new `chiaki_takion_socket_set_rcvbuf`. Tests in `test/packetstats.c` and
+`test/takionsocket.c`. Both apply after patch 0006.
 
 Source: https://github.com/chiaki-ng/chiaki-ng . License remains
 `LicenseRef-AGPL-3.0-only-OpenSSL`; see `licenses/remoteplay` and the upstream
