@@ -12,6 +12,7 @@ PATCHES = (
     "0002-chiaki-video-metadata.patch",
     "0003-chiaki-feedback-history.patch",
     "0004-chiaki-pad-proc-no.patch",
+    "0005-chiaki-reorder-queue-16bit-wrap.patch",
 )
 
 

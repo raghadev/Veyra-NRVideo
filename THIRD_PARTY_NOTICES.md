@@ -46,6 +46,13 @@ controller can apply", chiaki-ng issue #759) onto the unchanged
 request now carries `RP-PadProcNo: 3`; without it the console sends some adaptive
 trigger effects in a form the DualSense does not apply, so L2/R2 have no resistance.
 
+## Remote Play low latency video queue (2026-11-23)
+
+`scripts/remoteplay/patches/0005-chiaki-reorder-queue-16bit-wrap.patch` fixes the 16 bit
+sequence addition of `lib/src/reorderqueue.c` (operands promoted to `int`, so 65535 + 2 gave
+65537); with a gap pending at the wraparound the queue dropped the next valid packet. Adds the
+regression test `/reorder_queue/reorder_queue_16_wrap`.
+
 Source: https://github.com/chiaki-ng/chiaki-ng . License remains
 `LicenseRef-AGPL-3.0-only-OpenSSL`; see `licenses/remoteplay` and the upstream
 `COPYING`. The patch is an otherwise unchanged backport of the upstream change.

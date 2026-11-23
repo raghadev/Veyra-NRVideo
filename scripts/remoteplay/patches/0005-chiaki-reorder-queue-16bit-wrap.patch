@@ -1,0 +1,76 @@
+diff --git a/lib/src/reorderqueue.c b/lib/src/reorderqueue.c
+index 656c10d..96c0890 100644
+--- a/lib/src/reorderqueue.c
++++ b/lib/src/reorderqueue.c
+@@ -34,7 +34,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_reorder_queue_init(ChiakiReorderQueue *queu
+ #define REORDER_QUEUE_INIT(bits) \
+ static bool seq_num_##bits##_gt(uint64_t a, uint64_t b) { return chiaki_seq_num_##bits##_gt((ChiakiSeqNum##bits)a, (ChiakiSeqNum##bits)b); } \
+ static bool seq_num_##bits##_lt(uint64_t a, uint64_t b) { return chiaki_seq_num_##bits##_lt((ChiakiSeqNum##bits)a, (ChiakiSeqNum##bits)b); } \
+-static uint64_t seq_num_##bits##_add(uint64_t a, uint64_t b) { return (uint64_t)((ChiakiSeqNum##bits)a + (ChiakiSeqNum##bits)b); } \
++static uint64_t seq_num_##bits##_add(uint64_t a, uint64_t b) { return (uint64_t)(ChiakiSeqNum##bits)((ChiakiSeqNum##bits)a + (ChiakiSeqNum##bits)b); } /* truncate: 16 bit operands promote to int */ \
+ \
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_reorder_queue_init_##bits(ChiakiReorderQueue *queue, size_t size_exp, ChiakiSeqNum##bits seq_num_start) \
+ { \
+diff --git a/test/reorderqueue.c b/test/reorderqueue.c
+index f0fd5fe..e3e029e 100644
+--- a/test/reorderqueue.c
++++ b/test/reorderqueue.c
+@@ -172,6 +172,44 @@ static MunitResult test_reorder_queue_16(const MunitParameter params[], void *te
+ }
+ 
+ 
++// A gap right before the 16 bit wraparound: begin + count passes 65535.
++// The 16 bit add promoted to int and returned 65537 instead of 1, so the packet after the wrap was dropped.
++static MunitResult test_reorder_queue_16_wrap(const MunitParameter params[], void *test_user)
++{
++	(void)params; (void)test_user;
++	ChiakiReorderQueue queue;
++	munit_assert_int(chiaki_reorder_queue_init_16(&queue, 3, 65534), ==, CHIAKI_ERR_SUCCESS);
++	DropRecord drop_record = { 0 };
++	chiaki_reorder_queue_set_drop_cb(&queue, drop, &drop_record);
++
++	uint64_t seq_num = 0;
++	void *user = NULL;
++	chiaki_reorder_queue_push(&queue, 65534, (void *)1);
++	munit_assert(chiaki_reorder_queue_pull(&queue, &seq_num, &user));
++	munit_assert_uint64(seq_num, ==, 65534);
++
++	chiaki_reorder_queue_push(&queue, 0, (void *)2); // 65535 missing
++	munit_assert_uint64(chiaki_reorder_queue_count(&queue), ==, 2);
++	chiaki_reorder_queue_push(&queue, 1, (void *)3);
++	munit_assert_uint64(drop_record.count[3], ==, 0);
++	munit_assert_uint64(chiaki_reorder_queue_count(&queue), ==, 3);
++
++	chiaki_reorder_queue_push(&queue, 65535, (void *)4); // the missing one arrives
++	munit_assert(chiaki_reorder_queue_pull(&queue, &seq_num, &user));
++	munit_assert_uint64(seq_num, ==, 65535);
++	munit_assert(chiaki_reorder_queue_pull(&queue, &seq_num, &user));
++	munit_assert_uint64(seq_num, ==, 0); // not 65536
++	munit_assert_ptr_equal(user, (void *)2);
++	munit_assert(chiaki_reorder_queue_pull(&queue, &seq_num, &user));
++	munit_assert_uint64(seq_num, ==, 1);
++	munit_assert_ptr_equal(user, (void *)3);
++	munit_assert(!drop_record.failed);
++	for(size_t i=0; i<DROP_RECORD_MAX; i++)
++		munit_assert_uint64(drop_record.count[i], ==, 0);
++	chiaki_reorder_queue_fini(&queue);
++	return MUNIT_OK;
++}
++
+ MunitTest tests_reorder_queue[] = {
+ 	{
+ 		"/reorder_queue_16",
+@@ -181,5 +219,13 @@ MunitTest tests_reorder_queue[] = {
+ 		MUNIT_TEST_OPTION_NONE,
+ 		NULL
+ 	},
++	{
++		"/reorder_queue_16_wrap",
++		test_reorder_queue_16_wrap,
++		NULL,
++		NULL,
++		MUNIT_TEST_OPTION_NONE,
++		NULL
++	},
+ 	{ NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+ };

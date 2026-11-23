@@ -40,7 +40,8 @@ $patches = @(
     "0001-chiaki-msvc-vla-compat.patch",
     "0002-chiaki-video-metadata.patch",
     "0003-chiaki-feedback-history.patch",
-    "0004-chiaki-pad-proc-no.patch"
+    "0004-chiaki-pad-proc-no.patch",
+    "0005-chiaki-reorder-queue-16bit-wrap.patch"
 )
 foreach ($name in $patches) {
     $patch = Join-Path $Root "scripts/remoteplay/patches/$name"

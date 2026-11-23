@@ -40,5 +40,11 @@
     "bc397a728bb430f28666129ef006f7a8ac0e6081"
   ],
   "trigger_effects_patch": "patches/0004-chiaki-pad-proc-no.patch",
-  "trigger_effects_upstream_commit": "27ab96fd000bd0904f8ea3953c81f3ddb75b188b"
+  "trigger_effects_upstream_commit": "27ab96fd000bd0904f8ea3953c81f3ddb75b188b",
+  "reorder_queue_wrap_patch": "patches/0005-chiaki-reorder-queue-16bit-wrap.patch",
+  "reorder_queue_wrap_scope": [
+    "lib/src/reorderqueue.c",
+    "test/reorderqueue.c"
+  ],
+  "reorder_queue_wrap_note": "seq_num_16_add promoted to int and returned 65537 for 65535+2; a packet right after the 16 bit wrap was dropped while the queue held a gap. Not fixed upstream as of chiaki-ng 43728af (2026-11-03)."
 }
