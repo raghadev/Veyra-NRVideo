@@ -7,6 +7,7 @@
 #include "veyra/remoteplay/InputGate.h"
 #include "veyra/remoteplay/SessionInbox.h"
 #include "veyra/remoteplay/StreamRecovery.h"
+#include "veyra/remoteplay/NetworkReadout.h"
 #include "veyra/engine/PresentationScheduler.h"
 #include "veyra/engine/FgRecoveryBudget.h"
 #include <atomic>
@@ -204,6 +205,45 @@ TEST(recovery_intermittent_frames_do_not_renew_budget){
     StreamRecovery r;using A=StreamRecovery::Action;r.beginAttempt(0);r.frame(100);CHECK(r.poll(6100,false,false)==A::Reconnect);r.beginAttempt(7000);
     for(int64_t t=7100;t<150000;t+=1000)CHECK(!r.frame(t));
     CHECK(r.episodeRetries()==1);CHECK(r.reconnects()==1);
+}
+// --- PS5 stream panel numbers (NetworkReadout) ---
+bool near(std::optional<double> v,double expected){return v&&*v>expected-1e-9&&*v<expected+1e-9;}
+TEST(network_readout_invalid_is_all_dashes){
+    NetworkCounters c;c.packetReceived=100;c.gaps=5;c.windowUs=2000; // valid=false
+    const auto r=makeNetworkReadout(c,nullptr,1.0);
+    CHECK(!r.valid);CHECK(!r.lossPercent);CHECK(!r.windowMs);CHECK(!r.waitMaxMs);CHECK(!r.gapsPerSecond);
+}
+TEST(network_readout_first_reading_has_no_rates){
+    NetworkCounters c;c.valid=true;c.adaptive=true;c.packetReceived=990;c.packetLost=10;c.waitUsMax=3500;c.windowUs=2000;
+    c.tooLateTimeout=2;c.tooLateFec=7;
+    const auto r=makeNetworkReadout(c,nullptr,1.0);
+    CHECK(r.valid);CHECK(r.adaptive);CHECK(near(r.lossPercent,1.0));CHECK(near(r.waitMaxMs,3.5));CHECK(near(r.windowMs,2.0));
+    CHECK(!r.gapsPerSecond);CHECK(!r.fecSkipsPerSecond);CHECK(!r.timeoutSkipsPerSecond);CHECK(!r.waitMsPerSecond);
+    CHECK(r.tooLateTimeout==2);CHECK(r.tooLateFec==7);
+}
+TEST(network_readout_rates_over_two_seconds){
+    NetworkCounters a;a.valid=true;a.gaps=10;a.fecSkips=8;a.timeoutSkips=2;a.waitUsTotal=20000;a.packetReceived=500;
+    NetworkCounters b=a;b.gaps=30;b.fecSkips=26;b.timeoutSkips=4;b.waitUsTotal=60000;
+    const auto r=makeNetworkReadout(b,&a,2.0);
+    CHECK(near(r.gapsPerSecond,10.0));CHECK(near(r.fecSkipsPerSecond,9.0));CHECK(near(r.timeoutSkipsPerSecond,1.0));
+    CHECK(near(r.waitMsPerSecond,20.0)); // 40000 us in 2 s = 20 ms of waiting per second
+    CHECK(near(r.lossPercent,0.0));
+}
+TEST(network_readout_counter_going_down_is_a_new_session){
+    NetworkCounters a;a.valid=true;a.gaps=50;a.fecSkips=40;a.timeoutSkips=10;a.waitUsTotal=90000;
+    NetworkCounters b;b.valid=true;b.gaps=3;b.fecSkips=3;b.timeoutSkips=0;b.waitUsTotal=100;b.packetReceived=10;b.windowUs=16000;
+    const auto r=makeNetworkReadout(b,&a,1.0);
+    CHECK(!r.gapsPerSecond);CHECK(!r.fecSkipsPerSecond);CHECK(!r.timeoutSkipsPerSecond);CHECK(!r.waitMsPerSecond);
+    CHECK(near(r.windowMs,16.0));CHECK(near(r.lossPercent,0.0));
+}
+TEST(network_readout_no_packets_or_no_time_is_a_dash){
+    NetworkCounters a;a.valid=true;a.gaps=1;
+    NetworkCounters b=a;b.gaps=2;
+    CHECK(!makeNetworkReadout(b,&a,1.0).lossPercent); // zero packets in the window
+    CHECK(!makeNetworkReadout(b,&a,0.0).gapsPerSecond);
+    CHECK(!makeNetworkReadout(b,&a,-1.0).gapsPerSecond);
+    NetworkCounters invalidPrevious=a;invalidPrevious.valid=false;
+    CHECK(!makeNetworkReadout(b,&invalidPrevious,1.0).gapsPerSecond);
 }
 int main(int argc,char**argv){
     std::string filter;

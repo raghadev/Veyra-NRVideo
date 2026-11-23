@@ -296,6 +296,14 @@ NativeSnapshot ChiakiBackend::snapshot()const{
     out.serverTargetBitrate=s.serverTargetBitrate;out.qualityReports=s.qualityReports;
     // Upstream packet window may reset itself; do not label this cumulative UDP.
     if(s.initialized)chiaki_packet_stats_get(&s.session.stream_connection.packet_stats,false,&out.packetReceived,&out.packetLost);
+    if(s.initialized){
+        // Copied under Chiaki's own mutex; the box lives as long as the session object.
+        ChiakiAvReorderStats reorder{};chiaki_stream_connection_av_reorder_stats(&s.session.stream_connection,&reorder);
+        out.reorderValid=true;out.reorderAdaptive=reorder.adaptive;
+        out.reorderGaps=reorder.gaps;out.reorderFecSkips=reorder.fec_skips;out.reorderTimeoutSkips=reorder.timeout_skips;
+        out.reorderLateFills=reorder.late_fills;out.reorderTooLateTimeout=reorder.too_late_timeout;out.reorderTooLateFec=reorder.too_late_fec;
+        out.reorderWaitUsTotal=reorder.wait_us_total;out.reorderWaitUsMax=reorder.wait_us_max;out.reorderWindowUs=reorder.window_us;
+    }
     // After a stopped session the PS5 may briefly still report RP_IN_USE.
     // Retrying this request cannot evict it; the console remains authoritative.
     // A manual reconnect may race the console releasing our previous session.

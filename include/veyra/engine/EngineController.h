@@ -16,6 +16,7 @@
 #include "veyra/engine/EngineWatchdog.h"
 #include "veyra/sink/CaptureAudioSession.h"
 #include "veyra/remoteplay/SessionInbox.h"
+#include "veyra/remoteplay/NetworkReadout.h"
 #ifdef VEYRA_ENABLE_MOONLIGHT
 #include "veyra/source/MoonlightSessionSource.h"
 #endif
@@ -222,6 +223,7 @@ struct PlayerSnapshot {
     bool remoteRecovering=false;unsigned remoteReconnectAttempts=0;std::wstring remoteRecoveryMessage;
     remoteplay::SessionInbox::Snapshot remoteStream;
     double remoteReceivedFps=0,remoteDecodedFps=0;bool remoteRatesReady=false;uint64_t remoteReceived=0,remoteDecoded=0,remoteIngressDropped=0;
+    remoteplay::NetworkReadout remoteNetwork; // PS5 stream panel: loss and wait for missing video packets
 #ifdef VEYRA_ENABLE_MOONLIGHT
     bool moonlightActive=false;source::MoonlightStats moonlight;
 #endif

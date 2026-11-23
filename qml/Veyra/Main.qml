@@ -780,6 +780,7 @@ Window {
     Shortcut {
         sequence: "Ctrl+Alt+Shift+S"
         enabled: (veyra.moonlight && veyra.moonlight.state.streaming === true) || (veyra.xbox && veyra.xbox.state.streaming === true)
+                 || (veyra.ps5Stream && veyra.ps5Stream.streaming === true)
         onActivated: veyra.moonlightStatsVisible = !veyra.moonlightStatsVisible
     }
     StreamHud {

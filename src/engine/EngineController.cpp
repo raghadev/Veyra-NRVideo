@@ -459,6 +459,7 @@ PlayerSnapshot EngineController::snapshot()const{
         copy.remoteReceivedFps=s.receivedFps;copy.remoteDecodedFps=s.decodedFps;copy.remoteRatesReady=s.ratesReady;
         copy.remoteReceived=s.video.accessUnits;copy.remoteDecoded=s.decodedFrames;copy.remoteIngressDropped=s.video.dropped;
         copy.remotePlaySkipped=activeRemote->skipped();copy.captureAudio=activeRemote->audioState();copy.audioAvailable=copy.captureAudio.available;
+        copy.remoteNetwork=activeRemote->network();
     }
 #endif
 #ifdef VEYRA_ENABLE_MOONLIGHT

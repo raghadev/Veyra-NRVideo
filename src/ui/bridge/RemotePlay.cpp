@@ -28,6 +28,33 @@ QVariantMap QmlPlayerBridge::ps5() const {
     return out;
 }
 QVariantList QmlPlayerBridge::ps5Profiles() const { return impl_->ps5ProfileList; }
+QVariantMap QmlPlayerBridge::ps5Stream() const {
+    QVariantMap out;
+#ifdef VEYRA_ENABLE_REMOTEPLAY
+    const auto& s = impl_->snapshot;
+    const bool streaming = s.remotePlay && s.running;
+    out["streaming"] = streaming;
+    if (!streaming) return out;
+    const auto& n = s.remoteNetwork;
+    const auto put = [&](const char* key, const std::optional<double>& v) { out[key] = v ? *v : -1.0; };
+    out["valid"] = n.valid;
+    out["adaptive"] = n.adaptive;
+    out["receivedFps"] = s.remoteRatesReady ? s.remoteReceivedFps : -1.0;
+    out["decodedFps"] = s.remoteRatesReady ? s.remoteDecodedFps : -1.0;
+    put("lossPercent", n.lossPercent);
+    put("gapsPerSecond", n.gapsPerSecond);
+    put("fecSkipsPerSecond", n.fecSkipsPerSecond);
+    put("timeoutSkipsPerSecond", n.timeoutSkipsPerSecond);
+    put("waitMsPerSecond", n.waitMsPerSecond);
+    put("waitMaxMs", n.waitMaxMs);
+    put("windowMs", n.windowMs);
+    out["tooLateTimeout"] = n.valid ? double(n.tooLateTimeout) : -1.0;
+    out["tooLateFec"] = n.valid ? double(n.tooLateFec) : -1.0;
+#else
+    out["streaming"] = false;
+#endif
+    return out;
+}
 
 // --- PC streaming (Moonlight / Sunshine) -----------------------------------------------------------
 QObject* QmlPlayerBridge::moonlightModel() const {

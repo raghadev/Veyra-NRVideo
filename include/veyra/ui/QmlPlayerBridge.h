@@ -215,6 +215,8 @@ class QmlPlayerBridge : public QObject {
     // enabled, background, state: off|starting|connected|pin|recovering|failed|
     // nopair, message, keepaliveFps (-1 = not yet), pad, gyro, touch}
     Q_PROPERTY(QVariantMap ps5Control READ ps5Control NOTIFY ps5ControlChanged)
+    // PS5 stream panel (Ctrl+Alt+Shift+S): rates, loss and the wait for missing video packets; -1 = not measured.
+    Q_PROPERTY(QVariantMap ps5Stream READ ps5Stream NOTIFY snapshotChanged)
     // PC streaming (Moonlight / Sunshine): hosts, pairing, apps and stream settings live in
     // `moonlight` (null when the build has no Moonlight); capture state and the stats overlay here.
     Q_PROPERTY(QObject* moonlight READ moonlightModel CONSTANT)
@@ -844,6 +846,7 @@ public:
     QVariantMap ps5() const;
     QVariantList ps5Profiles() const;
     QVariantMap ps5Control() const;
+    QVariantMap ps5Stream() const;
     QObject* moonlightModel() const;
     bool moonlightCaptured() const;
     bool moonlightStatsVisible() const;

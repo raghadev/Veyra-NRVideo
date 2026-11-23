@@ -44,6 +44,11 @@ struct NativeSnapshot {
     bool startupRetryAllowed=false; // Only transient RP_IN_USE, never an auth rejection.
     int64_t serverTargetBitrate=-1; // Raw upstream field; diagnostic opt-in only.
     uint64_t qualityReports=0;
+    // Video reorder statistics of Chiaki patch 0006 (how long the picture waited for missing packets).
+    bool reorderValid=false,reorderAdaptive=false;
+    uint64_t reorderGaps=0,reorderFecSkips=0,reorderTimeoutSkips=0,reorderLateFills=0;
+    uint64_t reorderTooLateTimeout=0,reorderTooLateFec=0,reorderWaitUsTotal=0;
+    uint32_t reorderWaitUsMax=0,reorderWindowUs=0;
 };
 BackendResult initializeChiaki();
 class ChiakiBackend {

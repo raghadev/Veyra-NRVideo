@@ -10,7 +10,7 @@ extern "C" {
 namespace veyra::source {
 bool RemotePlaySessionSource::connect(RemotePlayConnectDesc desc) {
     close();
-    { std::lock_guard lock(mutex_); initialized_=started_=failed_=false; skipped_=publishedSequence_=0; recovery_={}; rates_={}; feedback_={}; controller_={}; pendingControllers_.clear(); snapshot_={}; }
+    { std::lock_guard lock(mutex_); initialized_=started_=failed_=false; skipped_=publishedSequence_=0; recovery_={}; rates_={}; network_={}; feedback_={}; controller_={}; pendingControllers_.clear(); snapshot_={}; }
     owner_=std::jthread([this, request=std::move(desc)](std::stop_token stop) mutable { run(stop,std::move(request)); });
     std::unique_lock lock(mutex_);
     ready_.wait(lock,[&]{return initialized_;});
@@ -133,6 +133,8 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
             {std::lock_guard lock(mutex_);previousDecoded=rates_.decoded;}
             auto nextNativeLog=lastFrame;
             remoteplay::NativeSnapshot native;
+            // Previous transport reading of this attempt, for the per-second rates of the stream panel.
+            remoteplay::NetworkCounters previousCounters;auto previousCountersAt=lastFrame;
             bool firstFrame=true;
             wchar_t disconnectAfter[24]{};uint64_t testDisconnectFrames=0;bool testDisconnected=false;
             if(!recovery.reconnects()&&GetEnvironmentVariableW(L"VEYRA_TEST_REMOTEPLAY_DISCONNECT_AFTER_FRAMES",disconnectAfter,24))testDisconnectFrames=std::clamp<uint64_t>(_wtoi64(disconnectAfter),60,3600);
@@ -156,6 +158,17 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
                 auto feedback=source.takeFeedback();
                 const auto snapshot=source.sessionSnapshot();
                 if(now>=nextNativeLog||result==SourceReadStatus::Error){native=source.nativeSnapshot();nextNativeLog=now+std::chrono::seconds(1);
+                    remoteplay::NetworkCounters counters;counters.valid=native.reorderValid;counters.adaptive=native.reorderAdaptive;
+                    counters.packetReceived=native.packetReceived;counters.packetLost=native.packetLost;
+                    counters.gaps=native.reorderGaps;counters.fecSkips=native.reorderFecSkips;counters.timeoutSkips=native.reorderTimeoutSkips;
+                    counters.lateFills=native.reorderLateFills;counters.tooLateTimeout=native.reorderTooLateTimeout;counters.tooLateFec=native.reorderTooLateFec;
+                    counters.waitUsTotal=native.reorderWaitUsTotal;counters.waitUsMax=native.reorderWaitUsMax;counters.windowUs=native.reorderWindowUs;
+                    const auto readout=remoteplay::makeNetworkReadout(counters,&previousCounters,std::chrono::duration<double>(now-previousCountersAt).count());
+                    previousCounters=counters;previousCountersAt=now;
+                    {std::lock_guard lock(mutex_);network_=readout;}
+                    log::info("remoteplay-reorder",std::format("adaptive={} gaps={} fecSkips={} timeoutSkips={} lateFills={} tooLateTimeout={} tooLateFec={} waitUsTotal={} waitUsMax={} windowUs={} (video packets the picture waited for; Chiaki patch 0006)",
+                        native.reorderAdaptive,native.reorderGaps,native.reorderFecSkips,native.reorderTimeoutSkips,native.reorderLateFills,
+                        native.reorderTooLateTimeout,native.reorderTooLateFec,native.reorderWaitUsTotal,native.reorderWaitUsMax,native.reorderWindowUs));
                     log::info("remoteplay-transport",std::format(
                         "attempt={} connected={} videoCallbacks={} audioCallbacks={} callbackRejected={} "
                         "packetWindowReceived={} packetWindowLost={} upstreamWarnings={} upstreamErrors={} "

@@ -1,5 +1,6 @@
 #pragma once
 #include "RemotePlaySource.h"
+#include "veyra/remoteplay/NetworkReadout.h"
 #include "veyra/sink/CaptureAudioSession.h"
 #include <atomic>
 #include <condition_variable>
@@ -31,6 +32,8 @@ public:
     Rates rates() const;
     struct RecoveryStatus {bool active=false;unsigned attempts=0;std::wstring message;};
     RecoveryStatus recoveryStatus()const {std::lock_guard lock(mutex_);return recovery_;}
+    // PS5 stream panel numbers, recomputed once per second by the session owner.
+    remoteplay::NetworkReadout network()const {std::lock_guard lock(mutex_);return network_;}
     sink::CaptureAudioState audioState() const { return audio_.snapshot(); }
     void setAudioGain(float value) { audio_.setGain(value); }
     void setAudioSync(unsigned mode, int offset) { audio_.setSync(mode, offset); }
@@ -58,6 +61,7 @@ private:
     std::string pin_;
     uint64_t skipped_=0;
     Rates rates_;
+    remoteplay::NetworkReadout network_;
     RecoveryStatus recovery_;
     uint64_t publishedSequence_=0;
     remoteplay::ControllerFeedback feedback_;

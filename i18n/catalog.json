@@ -131,6 +131,32 @@
    "ru": "  ·  запросы ключевых кадров "
   },
   {
+   "zh": "  ·  已被纠错覆盖 ",
+   "src": "qml/StreamHud.qml",
+   "zh-TW": "  ·  已被糾錯覆蓋 ",
+   "en": "  ·  already covered by FEC ",
+   "ja": "  ·  FEC で補完済み ",
+   "ko": "  · FEC로 이미 복원 ",
+   "es": "  ·  ya cubiertos por FEC ",
+   "fr": "  ·  déjà couverts par FEC ",
+   "de": "  ·  bereits per FEC abgedeckt ",
+   "pt-BR": "  ·  já cobertos pela correção ",
+   "ru": "  ·  уже покрыто FEC "
+  },
+  {
+   "zh": "  ·  当前等待上限 ",
+   "src": "qml/StreamHud.qml",
+   "zh-TW": "  ·  目前等待上限 ",
+   "en": "  ·  current limit ",
+   "ja": "  ·  現在の上限 ",
+   "ko": "  · 현재 한도 ",
+   "es": "  ·  límite actual ",
+   "fr": "  ·  limite actuelle ",
+   "de": "  ·  aktuelles Limit ",
+   "pt-BR": "  ·  limite atual ",
+   "ru": "  ·  текущий предел "
+  },
+  {
    "zh": "  ·  往返 ",
    "src": "qml/StreamHud.qml",
    "zh-TW": "  ·  往返 ",
@@ -233,6 +259,19 @@
    "de": " / dekodiert ",
    "pt-BR": " / decodificados ",
    "ru": " / декодировано "
+  },
+  {
+   "zh": " fps  ·  丢包 ",
+   "src": "qml/StreamHud.qml",
+   "zh-TW": " fps  ·  丟包 ",
+   "en": " fps  ·  loss ",
+   "ja": " fps  ·  ロス ",
+   "ko": " fps  · 손실 ",
+   "es": " fps  ·  pérdida ",
+   "fr": " fps  ·  perte ",
+   "de": " fps  ·  Verlust ",
+   "pt-BR": " fps  ·  perda ",
+   "ru": " fps  ·  потери "
   },
   {
    "zh": " fps  ·  丢帧 ",
@@ -1091,6 +1130,45 @@
    "de": "+  Beauty-Ebene hinzufügen",
    "pt-BR": "+  Adicionar camada de beleza",
    "ru": "+  Добавить слой красоты"
+  },
+  {
+   "zh": "/s  ·  最长 ",
+   "src": "qml/StreamHud.qml",
+   "zh-TW": "/s  ·  最長 ",
+   "en": "/s  ·  longest ",
+   "ja": "/s  ·  最長 ",
+   "ko": "/s  · 최장 ",
+   "es": "/s  ·  máxima ",
+   "fr": "/s  ·  max ",
+   "de": "/s  ·  längste ",
+   "pt-BR": "/s  ·  maior ",
+   "ru": "/s  ·  макс. "
+  },
+  {
+   "zh": "/s  ·  纠错即时恢复 ",
+   "src": "qml/StreamHud.qml",
+   "zh-TW": "/s  ·  糾錯即時恢復 ",
+   "en": "/s  ·  rebuilt at once by FEC ",
+   "ja": "/s  ·  FEC で即時復元 ",
+   "ko": "/s  · FEC 즉시 복원 ",
+   "es": "/s  ·  reconstruidos al instante por FEC ",
+   "fr": "/s  ·  reconstruits aussitôt par FEC ",
+   "de": "/s  ·  sofort per FEC wiederhergestellt ",
+   "pt-BR": "/s  ·  refeitos na hora pela correção ",
+   "ru": "/s  ·  сразу восстановлено FEC "
+  },
+  {
+   "zh": "/s  ·  超时跳过 ",
+   "src": "qml/StreamHud.qml",
+   "zh-TW": "/s  ·  逾時跳過 ",
+   "en": "/s  ·  skipped on timeout ",
+   "ja": "/s  ·  タイムアウトでスキップ ",
+   "ko": "/s  · 시간 초과로 건너뜀 ",
+   "es": "/s  ·  omitidos por tiempo ",
+   "fr": "/s  ·  sautés après délai ",
+   "de": "/s  ·  nach Zeitlimit übersprungen ",
+   "pt-BR": "/s  ·  pulados por tempo ",
+   "ru": "/s  ·  пропущено по таймауту "
   },
   {
    "zh": "0 = 不做高光滚降",
@@ -6291,6 +6369,32 @@
    "de": "Verlust %1",
    "pt-BR": "Perdido %1",
    "ru": "Потерянный %1"
+  },
+  {
+   "zh": "丢包等待：固定 16 ms",
+   "src": "qml/StreamHud.qml",
+   "zh-TW": "丟包等待：固定 16 ms",
+   "en": "Loss wait: fixed 16 ms",
+   "ja": "ロス待機：固定 16 ms",
+   "ko": "손실 대기: 고정 16 ms",
+   "es": "Espera por pérdida: fija 16 ms",
+   "fr": "Attente sur perte : fixe 16 ms",
+   "de": "Wartezeit bei Verlust: fest 16 ms",
+   "pt-BR": "Espera por perda: fixa 16 ms",
+   "ru": "Ожидание при потере: фиксированное 16 ms"
+  },
+  {
+   "zh": "丢包等待：自适应",
+   "src": "qml/StreamHud.qml",
+   "zh-TW": "丟包等待：自適應",
+   "en": "Loss wait: adaptive",
+   "ja": "ロス待機：アダプティブ",
+   "ko": "손실 대기: 적응형",
+   "es": "Espera por pérdida: adaptativa",
+   "fr": "Attente sur perte : adaptative",
+   "de": "Wartezeit bei Verlust: adaptiv",
+   "pt-BR": "Espera por perda: adaptativa",
+   "ru": "Ожидание при потере: адаптивное"
   },
   {
    "zh": "两台电脑接在同一个局域网，这里会自动出现；也可以在下面手填它的 IP。首次使用需要配对。",
@@ -29136,6 +29240,19 @@
    "ru": "Второй алгоритм SR"
   },
   {
+   "zh": "等待 ",
+   "src": "qml/StreamHud.qml",
+   "zh-TW": "等待 ",
+   "en": "Waiting ",
+   "ja": "待機 ",
+   "ko": "대기 ",
+   "es": "Espera ",
+   "fr": "Attente ",
+   "de": "Wartezeit ",
+   "pt-BR": "Espera ",
+   "ru": "Ожидание "
+  },
+  {
    "zh": "等待 PS5 登录 PIN 超时，请重新连接。",
    "src": "src/source/RemotePlaySessionSource.cpp",
    "zh-TW": "等待 PS5 登入 PIN 超時，請重新連接。",
@@ -29927,6 +30044,19 @@
    "de": "Der Encoder gab eine unbekannte Rahmennummer zurück",
    "pt-BR": "O codificador devolveu um número de quadro desconhecido",
    "ru": "Кодер вернул неизвестное число кадра"
+  },
+  {
+   "zh": "缺包 ",
+   "src": "qml/StreamHud.qml",
+   "zh-TW": "缺包 ",
+   "en": "Missing packets ",
+   "ja": "欠落パケット ",
+   "ko": "누락 패킷 ",
+   "es": "Paquetes faltantes ",
+   "fr": "Paquets manquants ",
+   "de": "Fehlende Pakete ",
+   "pt-BR": "Pacotes faltando ",
+   "ru": "Пропущено пакетов "
   },
   {
    "zh": "缺少此字幕格式的解码器",
@@ -36570,6 +36700,19 @@
    "de": "Nachdem Sie das Gerät angeschlossen haben, schalten Sie die Erweiterung aus, um zuerst das Basisbild zu überprüfen, und schalten Sie dann das ein, was Sie benötigen",
    "pt-BR": "Depois de conectar o dispositivo, desligue o realce para verificar a imagem base primeiro, em seguida, ligue o que você precisa",
    "ru": "После подключения устройства выключите улучшение, чтобы сначала проверить базовое изображение, а затем включите то, что вам нужно."
+  },
+  {
+   "zh": "迟到包 ",
+   "src": "qml/StreamHud.qml",
+   "zh-TW": "遲到包 ",
+   "en": "Late packets ",
+   "ja": "遅延パケット ",
+   "ko": "지연 패킷 ",
+   "es": "Paquetes tardíos ",
+   "fr": "Paquets en retard ",
+   "de": "Verspätete Pakete ",
+   "pt-BR": "Pacotes atrasados ",
+   "ru": "Опоздавшие пакеты "
   },
   {
    "zh": "退出全屏，恢复普通窗口操作",
