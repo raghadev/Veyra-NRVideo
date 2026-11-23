@@ -1,5 +1,15 @@
 # 当前工作日志
 
+## 2026-11-23 PS5 串流低延迟（fork raghadev/Veyra-NRVideo，分支 baixa-latencia-ps5，未提交）
+
+Chiaki 视频重排序队列原先在缺包时固定等待 16 ms，即使该帧已能由 FEC 恢复，后续帧也一起被挡住。新增补丁 `0005-chiaki-reorder-queue-16bit-wrap.patch`：修正 `reorderqueue.c` 的 16 位序号加法未截断（65535+2 得到 65537），序号回绕时若队列有缺口会丢弃下一个有效包；上游 chiaki-ng 43728af（2026-11-03）仍未修复。补丁 `0006-chiaki-av-reorder.patch`：新增 `avreorder.c/.h`，缺包所在帧已可由 FEC 恢复时立即跳过，否则按实测重排序延迟在 2 至 16 ms 之间自适应等待；FEC 跳过后 16 ms 内迟到的包在 `packet_stats` 中记回已收，避免向主机虚报丢包。编译定义 `CHIAKI_AV_REORDER_ADAPTIVE_DEFAULT=0` 恢复旧行为。`build-native.ps1`、`verify-chiaki-stage.py`、`dependency-lock.json` 和 `THIRD_PARTY_NOTICES.md` 已列入两个补丁。
+
+Veyra 侧：可移植的 `NetworkReadout` 计算 PS5 面板数值，`ChiakiBackend` 读取重排序统计，`StreamHud.qml` 在 PS5 串流时显示（同一 Ctrl+Alt+Shift+S），新增 11 条界面文本并补全 10 种语言；`WifiTuning` 在 PS5 会话期间关闭已连接网卡的后台扫描并开启媒体串流模式，结束时逐项恢复，wlanapi.dll 在运行时从 System32 加载，失败只记日志。
+
+验证（macOS，非产品平台）：钉住提交 0e16950 依次应用 0001 至 0006，`verify-chiaki-stage.py` 输出 `CHIAKI_STAGE_EXACT_PATCHES_VERIFIED`；chiaki 单元测试 118/118（原 102 项加新 16 项）；模拟 60 fps、1% 随机丢包时，每个丢包造成的额外滞留由旧策略 12921 µs 降到 0 µs，交付帧数相同（3600/3600）；5% 的包重排序至多 3 ms 时 3600/3600 帧完整、零超时跳过，4151 个迟到包（2.40%）记回已收，按帧统计后向主机报告的丢包与旧策略相同（均为 0）；1% 真实丢包时新策略报告 1732（等于真实丢包），旧策略报告 1737，因为 16 ms 等待使 64 格队列溢出并丢弃了 5 个正常包。重排序超过 16 ms 时新策略报告的丢包可能略高于旧策略（审查者模拟至多 20 ms 延迟时高 0.31 个百分点）。11 项 chiaki 破坏植入和 8 项 Veyra 破坏植入均被测试捕获。`services/remoteplay-probe` 91/91（Apple clang 下需对既有代码放宽三项 -Werror：missing-field-initializers、implicit-int-float-conversion、sign-conversion）。mingw-w64 对改动的 chiaki 文件、`ChiakiBackend.cpp`、`RemotePlaySessionSource.cpp`、`WifiTuning*.cpp` 做了 Windows 头文件检查。
+
+未验证：没有在 Windows/MSVC 完整构建（缺 NGX 专有 SDK），`QmlPlayerBridge` 与 QML 没有实际运行（只做了 qmlformat 语法检查），没有 PS5 实机测试，真实延迟收益和 Wi-Fi 调整效果未测。规格、计划和任务在 `specs/001-ps5-baixa-latencia/`。
+
 ## 2026-11-20 Veyra 2.2.0 正式发行
 
 用户授权向 Likely7/Veyra-NRVideo 发布 2.2.0、精简 README 并把完整更新和已有对比图放在 Release。安装器分支 7ecb5d1d 合入发行树，WORKLOG 的追加冲突保留两边记录。运行程序、QML、着色器及依赖构建使用主线 41d1aeb6，其中生产源码与 ecbe0543 一致。从已验证配置重用依赖参数，只加入正式 Ed25519 验签公钥及关闭回环测试。命令入口为 `scripts/acceptance/build-recording-handoff.py --task codex-release-2.2.0-20261120 --label 2.2.0 --jobs 2 --reconfigure`，8 个目标 374.0 秒通过，回执在同任务 `logs/build-20261120-055915`。
