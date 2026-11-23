@@ -1,6 +1,7 @@
 #include "veyra/source/RemotePlaySessionSource.h"
 #include "veyra/Log.h"
 #include "veyra/remoteplay/StreamRecovery.h"
+#include "veyra/remoteplay/WifiTuning.h"
 #include <cmath>
 #include <format>
 #include <algorithm>
@@ -36,6 +37,10 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
     std::jthread feeder;
     std::jthread monitor;
     try {
+        // Wi-Fi without background scans for exactly this attempt; undone when the attempt ends.
+        remoteplay::WifiTuning wifi(remoteplay::makeSystemWifiApi());
+        log::info("remoteplay-wifi",std::format("status={} adapters={} lastError={} (background scan off, media streaming mode on while the PS5 session runs)",
+            remoteplay::toString(wifi.status()),wifi.adjustedCount(),wifi.lastError()));
         const bool ok=source.connect(desc);
         if(!ok){retryWasRpInUse=source.nativeSnapshot().startupRetryAllowed;retry=recovery.poll(milliseconds(),false,true)==remoteplay::StreamRecovery::Action::Reconnect;}
         {std::lock_guard lock(mutex_);publishedInfo_=source.info();if(!initialized_)started_=ok;failed_=!ok&&!retry;initialized_=true;telemetryInbox_=source.telemetryInbox();

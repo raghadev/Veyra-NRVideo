@@ -8,6 +8,9 @@
 #include "veyra/remoteplay/SessionInbox.h"
 #include "veyra/remoteplay/StreamRecovery.h"
 #include "veyra/remoteplay/NetworkReadout.h"
+#include "veyra/remoteplay/WifiTuning.h"
+#include <string>
+#include <vector>
 #include "veyra/engine/PresentationScheduler.h"
 #include "veyra/engine/FgRecoveryBudget.h"
 #include <atomic>
@@ -244,6 +247,76 @@ TEST(network_readout_no_packets_or_no_time_is_a_dash){
     CHECK(!makeNetworkReadout(b,&a,-1.0).gapsPerSecond);
     NetworkCounters invalidPrevious=a;invalidPrevious.valid=false;
     CHECK(!makeNetworkReadout(b,&invalidPrevious,1.0).gapsPerSecond);
+}
+// --- Wi-Fi tuning for the PS5 session (WifiTuning) ---
+struct FakeWifi final : WifiApi {
+    std::vector<std::string>* log;
+    std::vector<WifiInterface> list;
+    std::uint32_t openError=0, scanError=0, streamingError=0;
+    bool throwOnStreaming=false, throwOnUndo=false;
+    explicit FakeWifi(std::vector<std::string>* l):log(l){}
+    static std::string id(const WifiInterface& i){return std::to_string(i.guid[0]);}
+    std::uint32_t open() override {log->push_back("open");return openError;}
+    std::uint32_t interfaces(std::vector<WifiInterface>& out) override {log->push_back("interfaces");out=list;return 0;}
+    std::uint32_t setBackgroundScan(const WifiInterface& i,bool on) override {
+        if(on&&throwOnUndo)throw std::runtime_error("undo");
+        log->push_back("scan "+id(i)+(on?" on":" off"));return on?0:scanError;}
+    std::uint32_t setMediaStreaming(const WifiInterface& i,bool on) override {
+        if(on&&throwOnStreaming)throw std::runtime_error("driver");
+        if(!on&&throwOnUndo)throw std::runtime_error("undo");
+        log->push_back("streaming "+id(i)+(on?" on":" off"));return on?streamingError:0;}
+    void close() override {log->push_back("close");}
+};
+WifiInterface wifiIface(std::uint8_t id,bool connected){WifiInterface i;i.guid[0]=id;i.connected=connected;return i;}
+TEST(wifi_tuning_only_connected_and_undone_in_reverse){
+    std::vector<std::string> log;
+    auto api=std::make_unique<FakeWifi>(&log);api->list={wifiIface(1,false),wifiIface(2,true)};
+    {
+        WifiTuning t(std::move(api));
+        CHECK(t.status()==WifiTuningStatus::Applied);CHECK(t.adjustedCount()==1);
+        CHECK((log==std::vector<std::string>{"open","interfaces","scan 2 off","streaming 2 on"}));
+    }
+    CHECK((log==std::vector<std::string>{"open","interfaces","scan 2 off","streaming 2 on","streaming 2 off","scan 2 on","close"}));
+}
+TEST(wifi_tuning_no_connected_adapter){
+    std::vector<std::string> log;
+    auto api=std::make_unique<FakeWifi>(&log);api->list={wifiIface(1,false)};
+    {WifiTuning t(std::move(api));CHECK(t.status()==WifiTuningStatus::NoWifi);CHECK(t.adjustedCount()==0);}
+    CHECK((log==std::vector<std::string>{"open","interfaces","close"}));
+}
+TEST(wifi_tuning_api_unavailable){
+    std::vector<std::string> log;
+    auto api=std::make_unique<FakeWifi>(&log);api->openError=1062; // ERROR_SERVICE_NOT_ACTIVE
+    {WifiTuning t(std::move(api));CHECK(t.status()==WifiTuningStatus::ApiUnavailable);CHECK(t.lastError()==1062);}
+    CHECK((log==std::vector<std::string>{"open"}));
+    WifiTuning none(nullptr);CHECK(none.status()==WifiTuningStatus::ApiUnavailable);
+}
+TEST(wifi_tuning_undoes_only_what_succeeded){
+    std::vector<std::string> log;
+    auto api=std::make_unique<FakeWifi>(&log);api->list={wifiIface(3,true)};api->scanError=5; // ERROR_ACCESS_DENIED
+    {WifiTuning t(std::move(api));CHECK(t.status()==WifiTuningStatus::Applied);CHECK(t.lastError()==5);}
+    CHECK((log==std::vector<std::string>{"open","interfaces","scan 3 off","streaming 3 on","streaming 3 off","close"}));
+}
+TEST(wifi_tuning_all_failed){
+    std::vector<std::string> log;
+    auto api=std::make_unique<FakeWifi>(&log);api->list={wifiIface(4,true)};api->scanError=5;api->streamingError=87;
+    {WifiTuning t(std::move(api));CHECK(t.status()==WifiTuningStatus::Failed);CHECK(t.adjustedCount()==0);CHECK(t.lastError()==87);}
+    CHECK((log==std::vector<std::string>{"open","interfaces","scan 4 off","streaming 4 on","close"}));
+}
+TEST(wifi_tuning_driver_throw_still_restores_scan){
+    std::vector<std::string> log;
+    auto api=std::make_unique<FakeWifi>(&log);api->list={wifiIface(5,true)};api->throwOnStreaming=true;
+    {WifiTuning t(std::move(api));CHECK(t.status()==WifiTuningStatus::Failed);}
+    CHECK((log==std::vector<std::string>{"open","interfaces","scan 5 off","scan 5 on","close"}));
+}
+TEST(wifi_tuning_destructor_never_throws){
+    std::vector<std::string> log;
+    auto api=std::make_unique<FakeWifi>(&log);api->list={wifiIface(6,true)};
+    auto* raw=api.get();
+    bool threw=false;
+    try{WifiTuning t(std::move(api));raw->throwOnUndo=true;}catch(...){threw=true;}
+    CHECK(!threw);
+    CHECK(log.back()=="close");
 }
 int main(int argc,char**argv){
     std::string filter;
