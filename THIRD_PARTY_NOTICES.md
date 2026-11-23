@@ -61,6 +61,11 @@ for an adaptive 2 to 16 ms window instead of a fixed 16 ms. `lib/src/packetstats
 credit so a reordered packet that arrives after such a skip (within 16 ms) is not reported to the console
 as lost. Tests in `test/avreorder.c`. Both patches apply on the unchanged pin after patches 0001-0004.
 
+`scripts/remoteplay/patches/0007-chiaki-packet-stats-16bit-wrap.patch` fixes the same 16 bit promotion
+in `lib/src/packetstats.c` (`seq_max - seq_min`): the loss report that covered the wrap of the audio
+frame index claimed about 2^64 lost packets, and a late or duplicate frame no longer turns the whole
+range into reported loss. Tests in `test/packetstats.c`. It applies after patch 0006.
+
 Source: https://github.com/chiaki-ng/chiaki-ng . License remains
 `LicenseRef-AGPL-3.0-only-OpenSSL`; see `licenses/remoteplay` and the upstream
 `COPYING`. The patch is an otherwise unchanged backport of the upstream change.
