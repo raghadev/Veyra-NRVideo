@@ -4,12 +4,17 @@
 
 **Input**: Feature specification from `/specs/001-ps5-baixa-latencia/spec.md`
 
+> **Numeração dos patches (25/11/2026)**: este documento nasceu antes da junção com o Veyra 2.2.1. Hoje a fila é:
+> 0001 a 0005 do Veyra (o 0005, novo no 2.2.1, é o buffer de recepção de 4 MiB), depois os nossos
+> `0006-chiaki-reorder-queue-16bit-wrap`, `0007-chiaki-av-reorder` e `0008-chiaki-packet-stats-16bit-wrap`
+> (antes 0005, 0006 e 0007). O nosso antigo 0008 (buffer de recepção) saiu: o do Veyra faz o mesmo.
+
 ## Summary
 
 A fila de vídeo do chiaki-ng segura a imagem até 16 ms a cada pacote perdido, mesmo quando o quadro já é
 reconstruível pela correção de erros. A feature troca essa política por uma que (1) pula na hora a lacuna
 de quadro reconstruível e (2) espera, nos outros casos, um tempo medido ao vivo entre 2 e 16 ms. A política
-mora num módulo C novo e testável (`avreorder`), entra no Veyra como patch 0005, publica contadores que o
+mora num módulo C novo e testável (`avreorder`), entra no Veyra como patch 0007, publica contadores que o
 Veyra mostra num painel PS5 novo, e o Veyra ainda pede ao Windows que a placa Wi-Fi não faça varredura
 durante a sessão.
 
@@ -17,7 +22,7 @@ durante a sessão.
 
 **Language/Version**: C11 compatível com MSVC (chiaki-ng); C++20 (Veyra); QML (Qt 6.8)
 
-**Primary Dependencies**: chiaki-ng fixado em `0e16950` + patches 0001 a 0004; jerasure; munit; Qt 6;
+**Primary Dependencies**: chiaki-ng fixado em `0e16950` + patches 0001 a 0006; jerasure; munit; Qt 6;
 `wlanapi.dll` (carregada em tempo de execução)
 
 **Storage**: N/A
@@ -32,7 +37,7 @@ portável do Veyra; compilação cruzada para Windows quando disponível; hardwa
 **Performance Goals**: retenção extra por perda recuperável < 1 ms em simulação (antes ~16 ms);
 custo por pacote limitado a varrer a fila (no máximo 64 entradas) só quando há lacuna
 
-**Constraints**: sem VLA; sem alocação no caminho por pacote; patch aplicado depois de 0001 a 0004; HUD com
+**Constraints**: sem VLA; sem alocação no caminho por pacote; patch aplicado depois de 0001 a 0006; HUD com
 traço para valor ausente; atualização da UI dentro das cadências já decididas (33 ms / 250 ms)
 
 **Scale/Scope**: 1 módulo C novo + ajustes em `takion.c`/`takion.h`/`streamconnection.*`; 3 a 4 arquivos
@@ -43,7 +48,7 @@ novos no Veyra + ajustes em ChiakiBackend, RemotePlaySessionSource, EngineContro
 | Princípio | Como o plano cumpre | Situação |
 |---|---|---|
 | I Medido, não prometido | Simulação mede antigo e novo no mesmo teste; painel mostra só número medido; relatório separa simulação de hardware | OK |
-| II Patch mínimo e rastreável | Patch `0005-chiaki-av-reorder.patch` gerado contra o stage 0001 a 0004; verificador e lock atualizados; constante para voltar ao antigo | OK |
+| II Patch mínimo e rastreável | Patch `0007-chiaki-av-reorder.patch` gerado contra o stage 0001 a 0006; verificador e lock atualizados; constante para voltar ao antigo | OK |
 | III Teste com sabotagem | Teste de cada regra antes do código; sabotagem planejada por regra (tarefas T0xx) | OK |
 | IV Nunca pior onde dá para saber | Pulo só com quadro reconstruível; janela com piso/teto e subida imediata; chegadas tardias contadas | OK |
 | V Windows primeiro, falha segura | `WifiTuning` RAII com DLL dinâmica, desfaz explícito, nunca lança | OK |
@@ -72,9 +77,9 @@ specs/001-ps5-baixa-latencia/
 
 ```text
 scripts/remoteplay/
-├── patches/0005-chiaki-av-reorder.patch      # novo: avreorder.{h,c}, takion, streamconnection, testes
-├── dependency-lock.json                      # + entrada do patch 0005
-└── verify-chiaki-stage.py                    # + 0005 na lista
+├── patches/0007-chiaki-av-reorder.patch      # novo: avreorder.{h,c}, takion, streamconnection, testes
+├── dependency-lock.json                      # + entrada do patch 0007
+└── verify-chiaki-stage.py                    # + 0007 na lista
 
 include/veyra/remoteplay/
 ├── ChiakiBackend.h                           # NativeSnapshot ganha campos reorder*

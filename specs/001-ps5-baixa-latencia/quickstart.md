@@ -1,6 +1,6 @@
 # Quickstart: validar a baixa latência do PS5
 
-## 1. No Mac (ou Linux): chiaki com os 5 patches
+## 1. No Mac (ou Linux): chiaki com os 8 patches (5 do Veyra 2.2.1 + 3 nossos)
 
 ```bash
 git clone https://github.com/chiaki-ng/chiaki-ng.git chiaki-ng
@@ -13,7 +13,7 @@ cmake -S . -B build -G Ninja -DCHIAKI_ENABLE_GUI=OFF -DCHIAKI_ENABLE_CLI=OFF -DC
 cmake --build build && ./build/test/chiaki-unit
 ```
 
-Esperado (medido em 2026-11-23, macOS): `125 of 125 (100%) tests successful`. Com
+Esperado (medido em 2026-11-25, macOS): `122 of 122 (100%) tests successful` (102 do chiaki + 20 nossos). Com
 `CHIAKI_TEST_REPORT=1 ./build/test/chiaki-unit --show-stderr /chiaki/avreorder/sim`:
 
 ```text
@@ -23,11 +23,8 @@ reorder 5% up to 3 ms: delivered=3600 of 3600 fec_skips=4025 timeout_skips=0 ext
 reorder 5% up to 3 ms: reported to the console legacy=0 adaptive=0
 ```
 
-E com `CHIAKI_TEST_REPORT=1 ./build/test/chiaki-unit --show-stderr /chiaki/takion_socket`:
-
-```text
-rcvbuf: burst of 300 packets (420 kB) while nobody reads: old 100 kB buffer kept 71, new 4096 kB buffer kept 300
-```
+O buffer de recepção de 4 MiB agora vem do patch 0005 do próprio Veyra; o teste dele
+(`veyra_remoteplay_udp_buffer_tests`) só compila no Windows e roda dentro do `build-native.ps1`.
 
 No macOS, `-DPYTHON_EXECUTABLE` precisa apontar para um Python com `protobuf` e `grpcio-tools` (gerador
 do nanopb), e `-DCMAKE_PREFIX_PATH` para curl e OpenSSL do Homebrew.

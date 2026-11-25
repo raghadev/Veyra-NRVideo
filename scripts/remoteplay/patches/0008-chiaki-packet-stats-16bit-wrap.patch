@@ -1,0 +1,165 @@
+diff --git a/lib/src/packetstats.c b/lib/src/packetstats.c
+index 160de8b..f2997c6 100644
+--- a/lib/src/packetstats.c
++++ b/lib/src/packetstats.c
+@@ -81,8 +81,10 @@ CHIAKI_EXPORT void chiaki_packet_stats_get(ChiakiPacketStats *stats, bool reset,
+ 	//		(unsigned long long)stats->gen_lost);
+ 
+ 	// seq
+-	uint64_t seq_diff = stats->seq_max - stats->seq_min; // overflow on purpose if max < min
+-	uint64_t seq_lost = stats->seq_received > seq_diff ? seq_diff : seq_diff - stats->seq_received;
++	// 16 bit modular difference: the operands promote to int, so truncate before widening
++	uint64_t seq_diff = (ChiakiSeqNum16)(stats->seq_max - stats->seq_min);
++	// more frames than the range holds (late or duplicate ones) means nothing can be counted as lost
++	uint64_t seq_lost = stats->seq_received >= seq_diff ? 0 : seq_diff - stats->seq_received;
+ 	*received += stats->seq_received;
+ 	*lost += seq_lost;
+ 
+diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
+index 92438fc..293205a 100644
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@ -6,6 +6,7 @@ set(CHIAKI_UNIT_SOURCES
+ 				main.c
+ 				http.c
+ 				rpcrypt.c
++				packetstats.c
+ 				gkcrypt.c
+ 				takion.c
+ 				seqnum.c
+diff --git a/test/main.c b/test/main.c
+index 031078f..1804390 100644
+--- a/test/main.c
++++ b/test/main.c
+@@ -9,6 +9,7 @@ extern MunitTest tests_feedback[];
+ extern MunitTest tests_reorder_queue[];
+ extern MunitTest tests_http[];
+ extern MunitTest tests_rpcrypt[];
++extern MunitTest tests_packet_stats[];
+ extern MunitTest tests_gkcrypt[];
+ extern MunitTest tests_takion[];
+ extern MunitTest tests_fec[];
+@@ -62,6 +63,13 @@ static MunitSuite suites[] = {
+ 		1,
+ 		MUNIT_SUITE_OPTION_NONE
+ 	},
++	{
++		"/packet_stats",
++		tests_packet_stats,
++		NULL,
++		1,
++		MUNIT_SUITE_OPTION_NONE
++	},
+ 	{
+ 		"/gkcrypt",
+ 		tests_gkcrypt,
+diff --git a/test/packetstats.c b/test/packetstats.c
+new file mode 100644
+index 0000000..617f807
+--- /dev/null
++++ b/test/packetstats.c
+@@ -0,0 +1,104 @@
++// SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
++
++#include <munit.h>
++
++#include <chiaki/packetstats.h>
++
++// Sequential statistics (audio frames): one missing frame is one lost frame.
++static MunitResult test_packet_stats_seq_loss(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	ChiakiPacketStats stats;
++	munit_assert_int(chiaki_packet_stats_init(&stats), ==, CHIAKI_ERR_SUCCESS);
++	uint64_t received = 0, lost = 0;
++	chiaki_packet_stats_push_seq(&stats, 1);
++	chiaki_packet_stats_push_seq(&stats, 2);
++	chiaki_packet_stats_push_seq(&stats, 4); // 3 never arrives
++	chiaki_packet_stats_push_seq(&stats, 5);
++	chiaki_packet_stats_get(&stats, true, &received, &lost);
++	munit_assert_uint64(received, ==, 4);
++	munit_assert_uint64(lost, ==, 1);
++	for(ChiakiSeqNum16 seq = 6; seq <= 10; seq++)
++		chiaki_packet_stats_push_seq(&stats, seq);
++	chiaki_packet_stats_get(&stats, true, &received, &lost);
++	munit_assert_uint64(received, ==, 5);
++	munit_assert_uint64(lost, ==, 0);
++	chiaki_packet_stats_fini(&stats);
++	return MUNIT_OK;
++}
++
++static void walk_to(ChiakiPacketStats *stats, ChiakiSeqNum16 target)
++{
++	// serial number comparison only sees less than half the space ahead, so walk up in steps
++	chiaki_packet_stats_push_seq(stats, 30000);
++	chiaki_packet_stats_push_seq(stats, 60000);
++	chiaki_packet_stats_push_seq(stats, target);
++	uint64_t received, lost;
++	chiaki_packet_stats_get(stats, true, &received, &lost); // seq_min = target
++}
++
++// The 16 bit frame index wraps every 65536 frames (about 11 minutes of audio). The difference of the
++// two 16 bit values was promoted to int, so the report covering the wrap claimed ~2^64 lost packets
++// and the console heard maximum loss.
++static MunitResult test_packet_stats_seq_wrap(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	ChiakiPacketStats stats;
++	munit_assert_int(chiaki_packet_stats_init(&stats), ==, CHIAKI_ERR_SUCCESS);
++	walk_to(&stats, 65530);
++	uint64_t received = 0, lost = 0;
++	for(unsigned int i = 1; i <= 10; i++) // 65531 .. 65535, 0 .. 4
++		chiaki_packet_stats_push_seq(&stats, (ChiakiSeqNum16)(65530 + i));
++	chiaki_packet_stats_get(&stats, true, &received, &lost);
++	munit_assert_uint64(received, ==, 10);
++	munit_assert_uint64(lost, ==, 0);
++	chiaki_packet_stats_fini(&stats);
++	return MUNIT_OK;
++}
++
++// A real loss across the wrap is still counted, exactly once.
++static MunitResult test_packet_stats_seq_wrap_with_loss(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	ChiakiPacketStats stats;
++	munit_assert_int(chiaki_packet_stats_init(&stats), ==, CHIAKI_ERR_SUCCESS);
++	walk_to(&stats, 65530);
++	uint64_t received = 0, lost = 0;
++	const ChiakiSeqNum16 seqs[] = { 65531, 65532, 65534, 65535, 0, 1 }; // 65533 never arrives
++	for(size_t i = 0; i < sizeof(seqs) / sizeof(seqs[0]); i++)
++		chiaki_packet_stats_push_seq(&stats, seqs[i]);
++	chiaki_packet_stats_get(&stats, true, &received, &lost);
++	munit_assert_uint64(received, ==, 6);
++	munit_assert_uint64(lost, ==, 1);
++	chiaki_packet_stats_fini(&stats);
++	return MUNIT_OK;
++}
++
++// A frame that shows up late, after the report that covered it, is one more received frame. The old
++// rule saw more frames than the range holds and then reported the whole range as lost.
++static MunitResult test_packet_stats_late_frame_is_not_loss(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	ChiakiPacketStats stats;
++	munit_assert_int(chiaki_packet_stats_init(&stats), ==, CHIAKI_ERR_SUCCESS);
++	uint64_t received = 0, lost = 0;
++	for(ChiakiSeqNum16 seq = 1; seq <= 14; seq++)
++		chiaki_packet_stats_push_seq(&stats, seq);
++	chiaki_packet_stats_get(&stats, true, &received, &lost);
++	for(ChiakiSeqNum16 seq = 15; seq <= 24; seq++)
++		chiaki_packet_stats_push_seq(&stats, seq);
++	chiaki_packet_stats_push_seq(&stats, 13); // late copy from the previous report
++	chiaki_packet_stats_get(&stats, true, &received, &lost);
++	munit_assert_uint64(received, ==, 11);
++	munit_assert_uint64(lost, ==, 0);
++	chiaki_packet_stats_fini(&stats);
++	return MUNIT_OK;
++}
++
++MunitTest tests_packet_stats[] = {
++	{ "/late_frame_is_not_loss", test_packet_stats_late_frame_is_not_loss, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/seq_loss", test_packet_stats_seq_loss, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/seq_wrap", test_packet_stats_seq_wrap, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/seq_wrap_with_loss", test_packet_stats_seq_wrap_with_loss, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
++};

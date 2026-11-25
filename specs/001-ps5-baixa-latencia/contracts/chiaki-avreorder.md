@@ -1,4 +1,4 @@
-# Contrato: API `chiaki/avreorder.h` (patch 0005 do chiaki-ng)
+# Contrato: API `chiaki/avreorder.h` (patch `0007-chiaki-av-reorder.patch` sobre o chiaki-ng)
 
 Política de espera da fila de vídeo do takion, separada do socket para poder ser testada sozinha.
 

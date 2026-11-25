@@ -12,10 +12,10 @@ PATCHES = (
     "0002-chiaki-video-metadata.patch",
     "0003-chiaki-feedback-history.patch",
     "0004-chiaki-pad-proc-no.patch",
-    "0005-chiaki-reorder-queue-16bit-wrap.patch",
-    "0006-chiaki-av-reorder.patch",
-    "0007-chiaki-packet-stats-16bit-wrap.patch",
-    "0008-chiaki-udp-receive-buffer.patch",
+    "0005-chiaki-udp-receive-buffer.patch",
+    "0006-chiaki-reorder-queue-16bit-wrap.patch",
+    "0007-chiaki-av-reorder.patch",
+    "0008-chiaki-packet-stats-16bit-wrap.patch",
 )
 
 

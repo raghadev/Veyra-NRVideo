@@ -41,13 +41,15 @@
   ],
   "trigger_effects_patch": "patches/0004-chiaki-pad-proc-no.patch",
   "trigger_effects_upstream_commit": "27ab96fd000bd0904f8ea3953c81f3ddb75b188b",
-  "reorder_queue_wrap_patch": "patches/0005-chiaki-reorder-queue-16bit-wrap.patch",
+  "udp_receive_buffer_patch": "patches/0005-chiaki-udp-receive-buffer.patch",
+  "udp_receive_buffer_bytes": 4194304,
+  "reorder_queue_wrap_patch": "patches/0006-chiaki-reorder-queue-16bit-wrap.patch",
   "reorder_queue_wrap_scope": [
     "lib/src/reorderqueue.c",
     "test/reorderqueue.c"
   ],
   "reorder_queue_wrap_note": "seq_num_16_add promoted to int and returned 65537 for 65535+2; a packet right after the 16 bit wrap was dropped while the queue held a gap. Not fixed upstream as of chiaki-ng 43728af (2026-11-03).",
-  "av_reorder_patch": "patches/0006-chiaki-av-reorder.patch",
+  "av_reorder_patch": "patches/0007-chiaki-av-reorder.patch",
   "av_reorder_scope": [
     "lib/include/chiaki/avreorder.h",
     "lib/src/avreorder.c",
@@ -64,21 +66,12 @@
     "test/avreorder.c"
   ],
   "av_reorder_note": "Video reorder wait policy: skip a missing packet at once when FEC can rebuild its frame, otherwise wait an adaptive 2..16 ms window; a reordered packet that arrives after a FEC skip within 16 ms is credited back as received in packet_stats so the loss report sent to the console matches the old policy; statistics published through chiaki_stream_connection_av_reorder_stats. CHIAKI_AV_REORDER_ADAPTIVE_DEFAULT=0 restores the old fixed 16 ms wait.",
-  "packet_stats_wrap_patch": "patches/0007-chiaki-packet-stats-16bit-wrap.patch",
+  "packet_stats_wrap_patch": "patches/0008-chiaki-packet-stats-16bit-wrap.patch",
   "packet_stats_wrap_scope": [
     "lib/src/packetstats.c",
     "test/packetstats.c",
     "test/CMakeLists.txt",
     "test/main.c"
   ],
-  "packet_stats_wrap_note": "seq_max - seq_min of two 16 bit values promoted to int: the loss report covering the 16 bit wrap of the audio frame index (about every 11 minutes) claimed ~2^64 lost packets, and the console lowers its bitrate on reported loss (chiaki-ng #157, #871). Not fixed upstream as of chiaki-ng 43728af. The same patch stops a late or duplicate frame (more frames received than the range holds) from turning the whole range into reported loss.",
-  "udp_receive_buffer_patch": "patches/0008-chiaki-udp-receive-buffer.patch",
-  "udp_receive_buffer_scope": [
-    "lib/include/chiaki/takion.h",
-    "lib/src/takion.c",
-    "test/takionsocket.c",
-    "test/CMakeLists.txt",
-    "test/main.c"
-  ],
-  "udp_receive_buffer_note": "SO_RCVBUF was the advertised data window (100 kB), smaller than one large video frame; the takion socket now asks for 4 MiB and halves while the system refuses (chiaki-ng #873, #817). The advertised a_rwnd is unchanged."
+  "packet_stats_wrap_note": "seq_max - seq_min of two 16 bit values promoted to int: the loss report covering the 16 bit wrap of the audio frame index (about every 11 minutes) claimed ~2^64 lost packets, and the console lowers its bitrate on reported loss (chiaki-ng #157, #871). Not fixed upstream as of chiaki-ng 43728af. The same patch stops a late or duplicate frame (more frames received than the range holds) from turning the whole range into reported loss."
 }

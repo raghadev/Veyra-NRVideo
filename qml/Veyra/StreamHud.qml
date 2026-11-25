@@ -13,7 +13,7 @@ Rectangle {
     readonly property var xb: veyra.xbox
     readonly property bool xboxOn: !!xb && xb.state.streaming === true
     readonly property bool pcOn: !!ml && ml.state.streaming === true
-    // PS5: how long the picture waited for missing video packets (Chiaki patch 0006); -1 = not measured.
+    // PS5: how long the picture waited for missing video packets (Chiaki av-reorder patch); -1 = not measured.
     readonly property var ps: veyra.ps5Stream || ({})
     readonly property bool psOn: !xboxOn && !pcOn && ps.streaming === true
     readonly property var s: xboxOn ? (xb.state.stream || ({})) : pcOn ? (ml.state.stream || ({})) : ({})

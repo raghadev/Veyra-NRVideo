@@ -7,6 +7,10 @@
 
 ## Format: `[ID] [P?] [Story] Description`
 
+> **Numeração dos patches (25/11/2026)**: as fases 1 a 7 citam os números da época. Depois da junção com o
+> Veyra 2.2.1 (Phase 8): 0005 = buffer de recepção do próprio Veyra (substitui o nosso antigo 0008);
+> 0006 = virada de 16 bits da fila (era 0005); 0007 = av-reorder (era 0006); 0008 = packet stats (era 0007).
+
 ## Phase 1: Setup
 
 - [x] T001 Stage do chiaki fixado + patches 0001 a 0004 em `~/Desktop/DEV/chiaki-pin`, índice do git como base
@@ -89,11 +93,22 @@
 
 - [x] T040 Pesquisa funda com 3 agentes (chiaki-ng no GitHub; decodificar e exibir sem fila; limites e medições do PS5) e leitura do caminho de vídeo do Veyra; hipóteses do decodificador e do motor eliminadas com prova (research.md R9)
 - [x] T041 [US1] Testes `packet_stats/seq_loss`, `seq_wrap`, `seq_wrap_with_loss` (vermelhos na virada antes do código) e correção da diferença de 16 bits em `packetstats.c`; patch 0007
-- [x] T042 [US1] Testes `takion_socket/rcvbuf_holds_frame_burst`, `rcvbuf_minimum`, `connect_uses_large_rcvbuf` e `chiaki_takion_socket_set_rcvbuf` (4 MiB com redução); patch 0008
+- [x] T042 [US1] Testes `takion_socket/rcvbuf_holds_frame_burst`, `rcvbuf_minimum`, `connect_uses_large_rcvbuf` e `chiaki_takion_socket_set_rcvbuf` (4 MiB com redução); patch 0008 da época, retirado em 25/11 (T048)
 - [x] T043 [US1] `SessionInbox::waitVideo` + `VideoIngress::closed` com 4 testes; laço da sessão troca o sono de 1 ms pela espera (arquivo só de Windows, conferido com cabeçalhos do Windows, não executado)
 - [x] T044 Sabotagens S12 a S15 (chiaki) e V9 a V12 (Veyra); cadeia limpa com 8 patches e verificador
 - [x] T045 Crítico de contexto limpo na segunda leva (aprovado, sem P0/P1). O P2 que ele mediu (quadro de áudio atrasado virava perda total no relatório) foi corrigido no patch 0007 com o teste `packet_stats/late_frame_is_not_loss` e a sabotagem S16; verificado por teste, sem nova rodada de crítico
 - [ ] T046 Fase 2 (aguarda decisão): painel com tempos reais do PC, leitura do controle a 4 ms, compilar e medir no Acer com o PS5
+
+## Phase 8: Junção com o Veyra 2.2.1 (25/11/2026)
+
+- [x] T047 Ler o Veyra 2.2.1 (`bc59d457`): traz o patch `0005-chiaki-udp-receive-buffer.patch` (4 MiB, igual ao nosso de buffer) e dá 5 conflitos com o ramo
+- [x] T048 Retirar o nosso patch de buffer (com `test/takionsocket.c` e `chiaki_takion_socket_set_rcvbuf`), renumerar os nossos para 0006 a 0008 e regenerá-los sobre o 0005 deles com `scripts/remoteplay/fork/mkpatch.sh`
+- [x] T049 Cadeia limpa (fixado + 8 patches): verificador imprime `CHIAKI_STAGE_EXACT_PATCHES_VERIFIED`; chiaki 122 de 122 (102 + 20 nossos); simulação com os mesmos números de 23/11
+- [x] T050 Juntar `upstream/main` no ramo: listas de `verify-chiaki-stage.py` e `build-native.ps1`, `dependency-lock.json`, `i18n/catalog.json` (3325 entradas deles + 11 nossas), WORKLOG, avisos de terceiros
+- [x] T051 Revalidar o lado Veyra: testes portáveis 95 de 95, cabeçalhos do Windows (mingw) sem erro em 8 arquivos, i18n 3336 entradas com 0 faltando, qmlformat lê `Main.qml` e `StreamHud.qml`; o teste de buffer do upstream, portado para POSIX só para esta conferência, passa nos dois caminhos de socket
+- [x] T052 Sabotagens refeitas sobre a fila nova: 14 no chiaki (S14 e S15 eram do patch de buffer retirado) e 12 no Veyra, todas vermelhas; scripts guardados em `scripts/remoteplay/fork/`; stage conferido byte a byte depois
+- [x] T054 Defeito nosso achado ao preparar a crítica (existia desde 23/11): rodar `build-native.ps1` pela segunda vez no mesmo stage parava, porque ele confere patch por patch com `git apply --reverse --check` e os nossos registravam os testes colados nos do 0003 e um no outro. Agora o 0007 registra no fim das listas e o 0008 depois de `rpcrypt`; os 8 passam na conferência (`scripts/remoteplay/fork/check-reapply.sh`, que fica vermelho com a fila anterior). Linhas de código dos patches iguais, só mudou a posição do registro
+- [x] T053 Crítico de contexto limpo sobre a junção: aprovado, sem P0 nem P1. Dois P3 de texto corrigidos por substituição (nome de um arquivo na lista de conflitos do WORKLOG; números antigos no corpo do plan.md)
 
 ## Dependencies & Execution Order
 

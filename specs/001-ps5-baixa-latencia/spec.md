@@ -143,9 +143,11 @@ conectadas, que tudo é desfeito ao fim e que falhas não impedem a sessão.
   áudio dá a volta (65535 para 0); antes, o relatório dessa virada dizia cerca de 2^64 pacotes perdidos.
   Um quadro de áudio que chega atrasado, depois do relatório que o cobria, MUST contar como recebido a
   mais, nunca transformar o intervalo inteiro em perda.
-- **FR-015**: O socket de vídeo MUST ter espaço de recepção para um quadro grande inteiro (alvo de 4 MiB,
-  reduzindo pela metade enquanto o sistema recusar, nunca abaixo do valor antigo), sem mudar a janela
-  anunciada ao console.
+- **FR-015**: O socket de vídeo MUST ter espaço de recepção para um quadro grande inteiro (4 MiB), sem
+  mudar a janela anunciada ao console. Desde 25/11/2026 quem cumpre isto é o patch 0005 do próprio Veyra
+  2.2.1 (`0005-chiaki-udp-receive-buffer.patch`), que chegou depois do nosso e faz o mesmo; o nosso saiu
+  para não haver dois consertos do mesmo ponto. Diferença: o deles pede 4 MiB fixos, sem a redução pela
+  metade que o nosso tinha para sistema que recusa (no Windows, a plataforma do produto, não faz falta).
 - **FR-016**: O laço que decodifica o vídeo do PS5 MUST acordar quando um quadro chega, em vez de dormir
   um intervalo fixo entre checagens; com a caixa de entrada fechada (parando ou em falha) vale o sono antigo.
 
@@ -187,8 +189,9 @@ conectadas, que tudo é desfeito ao fim e que falhas não impedem a sessão.
   atrasos de até 20 ms), porque a fila travada da antiga esticava a espera de buracos seguidos.
 
 - **SC-009**: Numa rajada de 300 pacotes (420 kB) que chega sem ninguém ler, o buffer antigo (100 kB)
-  guarda 71 pacotes e o novo guarda os 300 (medido em macOS; em sistema que limita o buffer o teste se
-  declara pulado).
+  guarda 71 pacotes e o de 4 MiB guarda os 300 (medido em macOS em 23/11/2026 com o teste do nosso patch
+  antigo, que saiu na junção com o 2.2.1). O patch 0005 do Veyra tem teste próprio, só de Windows
+  (`veyra_remoteplay_udp_buffer_tests`, confere que o socket ficou com pelo menos 4 MiB); não rodado aqui.
 - **SC-010**: No relatório que cobre a virada do contador, 10 quadros recebidos dão 0 perdidos; com um
   quadro realmente perdido na virada, dá 1. Dez quadros recebidos mais um atrasado do relatório anterior
   dão 11 recebidos e 0 perdidos (antes: 10 perdidos).

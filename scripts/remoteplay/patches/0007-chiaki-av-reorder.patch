@@ -1,0 +1,1781 @@
+diff --git a/lib/CMakeLists.txt b/lib/CMakeLists.txt
+index af56a2c..1a6946a 100644
+--- a/lib/CMakeLists.txt
++++ b/lib/CMakeLists.txt
+@@ -28,6 +28,7 @@ set(HEADER_FILES
+ 		include/chiaki/congestioncontrol.h
+ 		include/chiaki/stoppipe.h
+ 		include/chiaki/reorderqueue.h
++		include/chiaki/avreorder.h
+ 		include/chiaki/discoveryservice.h
+ 		include/chiaki/feedback.h
+ 		include/chiaki/feedbacksender.h
+@@ -73,6 +74,7 @@ set(SOURCE_FILES
+ 		src/congestioncontrol.c
+ 		src/stoppipe.c
+ 		src/reorderqueue.c
++		src/avreorder.c
+ 		src/discoveryservice.c
+ 		src/feedback.c
+ 		src/feedbacksender.c
+diff --git a/lib/include/chiaki/avreorder.h b/lib/include/chiaki/avreorder.h
+new file mode 100644
+index 0000000..f7e389e
+--- /dev/null
++++ b/lib/include/chiaki/avreorder.h
+@@ -0,0 +1,165 @@
++// SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
++
++/**
++ * Wait policy for the takion video reorder queue.
++ *
++ * The queue delivers video packets in order. When the packet at its head is missing, the old policy held
++ * every later packet for a fixed 16 ms, even when the frame of the missing packet could already be
++ * rebuilt by FEC. This policy:
++ *  - skips a missing packet immediately when its frame already has enough units (delivered + queued)
++ *    for FEC to rebuild it, so nothing is lost by not waiting;
++ *  - otherwise waits for an adaptive window (2..16 ms) learnt from how late reordered packets really
++ *    arrive on this link, rising at once when a packet shows up after its gap was skipped.
++ *
++ * It is separate from takion so the decision can be tested without sockets or threads.
++ */
++
++#ifndef CHIAKI_AVREORDER_H
++#define CHIAKI_AVREORDER_H
++
++#include "common.h"
++#include "thread.h"
++#include "seqnum.h"
++#include "reorderqueue.h"
++#include "packetstats.h"
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define CHIAKI_AV_REORDER_WINDOW_MIN_US 2000
++#define CHIAKI_AV_REORDER_WINDOW_MAX_US 16000
++#define CHIAKI_AV_REORDER_PEAK_HALF_LIFE_US 1500000
++#define CHIAKI_AV_REORDER_WINDOW_FALL_US_PER_S 2000
++#define CHIAKI_AV_REORDER_SKIP_HISTORY 16
++
++// 1 = adaptive policy (default), 0 = the old fixed 16 ms wait without FEC skipping.
++#ifndef CHIAKI_AV_REORDER_ADAPTIVE_DEFAULT
++#define CHIAKI_AV_REORDER_ADAPTIVE_DEFAULT 1
++#endif
++
++/**
++ * The fields of a queued video packet that the policy reads.
++ */
++typedef struct chiaki_av_reorder_unit_t
++{
++	ChiakiSeqNum16 packet_index;
++	ChiakiSeqNum16 frame_index;
++	uint16_t unit_index;
++	uint16_t units_total; // source + fec
++	uint16_t units_fec;
++} ChiakiAvReorderUnit;
++
++/**
++ * Fill out with the fields of the queued entry. Return false if the entry has no usable fields.
++ */
++typedef bool (*ChiakiAvReorderUnitOf)(void *entry, ChiakiAvReorderUnit *out);
++
++/**
++ * Receives each entry in order and takes ownership of it.
++ */
++typedef void (*ChiakiAvReorderDispatch)(uint64_t seq_num, void *entry, void *user);
++
++typedef struct chiaki_av_reorder_stats_t
++{
++	uint64_t gaps; // missing head packets noticed
++	uint64_t fec_skips; // gaps skipped at once because FEC can rebuild the frame
++	uint64_t timeout_skips; // gaps skipped after the wait window expired
++	uint64_t late_fills; // missing packets that arrived inside the window
++	uint64_t too_late_timeout; // packets that arrived after their gap was skipped on timeout
++	uint64_t too_late_fec; // packets that arrived after their gap was skipped through FEC (no cost)
++	uint64_t wait_us_total; // time the head of the queue spent waiting
++	uint32_t wait_us_max; // longest single wait
++	uint32_t window_us; // wait window in force
++	bool adaptive;
++} ChiakiAvReorderStats;
++
++/**
++ * Published copy of the statistics. Written by the takion thread, read from any thread.
++ */
++typedef struct chiaki_av_reorder_stats_box_t
++{
++	ChiakiMutex mutex;
++	ChiakiAvReorderStats stats;
++	// Set once before the takion thread starts, may be NULL: where a reordered packet that arrived after
++	// its gap was skipped through FEC is credited back as received (the loss report goes to the console).
++	ChiakiPacketStats *packet_stats;
++} ChiakiAvReorderStatsBox;
++
++typedef enum chiaki_av_reorder_skip_reason_t
++{
++	CHIAKI_AV_REORDER_SKIP_NONE = 0,
++	CHIAKI_AV_REORDER_SKIP_FEC = 1,
++	CHIAKI_AV_REORDER_SKIP_TIMEOUT = 2
++} ChiakiAvReorderSkipReason;
++
++typedef struct chiaki_av_reorder_skip_t
++{
++	uint64_t first;
++	uint64_t count;
++	int64_t gap_start_us;
++	ChiakiAvReorderSkipReason reason;
++} ChiakiAvReorderSkip;
++
++typedef struct chiaki_av_reorder_t
++{
++	bool adaptive;
++
++	bool head_waiting; // the head of the queue is missing since head_wait_start_us
++	int64_t head_wait_start_us;
++	uint64_t head_wait_seq_num;
++
++	bool have_dispatch; // the last delivered frame, to count its units
++	ChiakiSeqNum16 dispatch_frame_index;
++	ChiakiSeqNum16 dispatch_frame_first;
++	uint16_t dispatch_frame_total;
++	uint16_t dispatch_frame_fec;
++	uint16_t dispatch_frame_units;
++
++	bool clock_started;
++	uint32_t window_us;
++	uint32_t peak_us; // peak of observed reorder delay, as of peak_at_us
++	int64_t peak_at_us;
++	int64_t last_decay_us;
++
++	ChiakiAvReorderSkip skipped[CHIAKI_AV_REORDER_SKIP_HISTORY];
++	size_t skipped_next;
++
++	ChiakiAvReorderStats stats;
++	bool stats_dirty;
++	ChiakiAvReorderStatsBox *box; // may be NULL
++} ChiakiAvReorder;
++
++CHIAKI_EXPORT void chiaki_av_reorder_init(ChiakiAvReorder *reorder, bool adaptive, ChiakiAvReorderStatsBox *box);
++
++/**
++ * Call for every video packet BEFORE chiaki_reorder_queue_push(). Only observes: a packet that fills the
++ * missing head inside the window teaches the window, a packet older than the head of the queue is
++ * classified as too late.
++ */
++CHIAKI_EXPORT void chiaki_av_reorder_on_arrival(ChiakiAvReorder *reorder, ChiakiReorderQueue *queue, uint64_t seq_num, int64_t now_us);
++
++/**
++ * Deliver everything that can be delivered now, skipping gaps per the policy.
++ * Every delivered entry goes through dispatch, which takes ownership.
++ */
++CHIAKI_EXPORT void chiaki_av_reorder_flush(ChiakiAvReorder *reorder, ChiakiReorderQueue *queue, int64_t now_us,
++		ChiakiAvReorderUnitOf unit_of, ChiakiAvReorderDispatch dispatch, void *user);
++
++/**
++ * Microseconds until flush must run again for a pending gap, or -1 if no gap is pending.
++ */
++CHIAKI_EXPORT int64_t chiaki_av_reorder_next_timeout_us(ChiakiAvReorder *reorder, int64_t now_us);
++
++CHIAKI_EXPORT ChiakiErrorCode chiaki_av_reorder_stats_box_init(ChiakiAvReorderStatsBox *box);
++CHIAKI_EXPORT void chiaki_av_reorder_stats_box_fini(ChiakiAvReorderStatsBox *box);
++CHIAKI_EXPORT void chiaki_av_reorder_stats_get(ChiakiAvReorderStatsBox *box, ChiakiAvReorderStats *out);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif // CHIAKI_AVREORDER_H
+diff --git a/lib/include/chiaki/packetstats.h b/lib/include/chiaki/packetstats.h
+index 104c8a9..1e162b5 100644
+--- a/lib/include/chiaki/packetstats.h
++++ b/lib/include/chiaki/packetstats.h
+@@ -10,6 +10,8 @@
+ extern "C" {
+ #endif
+ 
++#define CHIAKI_PACKET_STATS_LATE_CREDIT_MAX 64
++
+ typedef struct chiaki_packet_stats_t
+ {
+ 	ChiakiMutex mutex;
+@@ -17,6 +19,8 @@ typedef struct chiaki_packet_stats_t
+ 	// For generations of packets, i.e. where we know the number of expected packets per generation
+ 	uint64_t gen_received;
+ 	uint64_t gen_lost;
++	// Units counted as lost that arrived late after all (reordered): the next generations count them as received.
++	uint64_t gen_late_credit;
+ 
+ 	// For sequential packets, i.e. where packets are identified by a sequence number
+ 	ChiakiSeqNum16 seq_min; // sequence number that was max at the last reset
+@@ -28,6 +32,12 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_packet_stats_init(ChiakiPacketStats *stats)
+ CHIAKI_EXPORT void chiaki_packet_stats_fini(ChiakiPacketStats *stats);
+ CHIAKI_EXPORT void chiaki_packet_stats_reset(ChiakiPacketStats *stats);
+ CHIAKI_EXPORT void chiaki_packet_stats_push_generation(ChiakiPacketStats *stats, uint64_t received, uint64_t lost);
++
++/**
++ * A unit that a generation counts (or will count) as lost arrived late after all.
++ * At most CHIAKI_PACKET_STATS_LATE_CREDIT_MAX credits are kept.
++ */
++CHIAKI_EXPORT void chiaki_packet_stats_push_late_unit(ChiakiPacketStats *stats);
+ CHIAKI_EXPORT void chiaki_packet_stats_push_seq(ChiakiPacketStats *stats, ChiakiSeqNum16 seq_num);
+ CHIAKI_EXPORT void chiaki_packet_stats_get(ChiakiPacketStats *stats, bool reset, uint64_t *received, uint64_t *lost);
+ 
+diff --git a/lib/include/chiaki/streamconnection.h b/lib/include/chiaki/streamconnection.h
+index 56ec7b6..0abcb57 100644
+--- a/lib/include/chiaki/streamconnection.h
++++ b/lib/include/chiaki/streamconnection.h
+@@ -39,6 +39,7 @@ typedef struct chiaki_stream_connection_t
+ 	size_t streaminfo_early_buf_size;
+ 
+ 	ChiakiPacketStats packet_stats;
++	ChiakiAvReorderStatsBox av_reorder_stats; // published by the takion thread
+ 	ChiakiAudioReceiver *audio_receiver;
+ 	ChiakiVideoReceiver *video_receiver;
+ 	ChiakiAudioReceiver *haptics_receiver;
+@@ -97,6 +98,11 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_stop(ChiakiStreamConnecti
+ CHIAKI_EXPORT ChiakiErrorCode stream_connection_send_corrupt_frame(ChiakiStreamConnection *stream_connection, ChiakiSeqNum16 start, ChiakiSeqNum16 end);
+ CHIAKI_EXPORT ChiakiErrorCode stream_connection_send_idr_request(ChiakiStreamConnection *stream_connection);
+ 
++/**
++ * Copy of the video reorder statistics, safe from any thread while the stream connection exists.
++ */
++CHIAKI_EXPORT void chiaki_stream_connection_av_reorder_stats(ChiakiStreamConnection *stream_connection, ChiakiAvReorderStats *out);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/lib/include/chiaki/takion.h b/lib/include/chiaki/takion.h
+index 32f228b..ab6db4f 100644
+--- a/lib/include/chiaki/takion.h
++++ b/lib/include/chiaki/takion.h
+@@ -10,6 +10,7 @@
+ #include "seqnum.h"
+ #include "stoppipe.h"
+ #include "reorderqueue.h"
++#include "avreorder.h"
+ #include "feedback.h"
+ #include "takionsendbuffer.h"
+ 
+@@ -117,6 +118,7 @@ typedef struct chiaki_takion_connect_info_t
+ 	bool enable_dualsense;
+ 	uint8_t protocol_version;
+ 	bool close_socket; // close socket when finishing takion
++	ChiakiAvReorderStatsBox *av_reorder_stats; // where to publish video reorder statistics, may be NULL
+ } ChiakiTakionConnectInfo;
+ 
+ 
+@@ -155,8 +157,8 @@ typedef struct chiaki_takion_t
+ 	ChiakiReorderQueue data_queue;
+ 	ChiakiReorderQueue video_queue;
+ 	bool video_queue_initialized;
+-	int64_t video_queue_head_wait_start_us;
+-	uint64_t video_queue_head_wait_seq_num;
++	ChiakiAvReorder video_reorder; // wait policy for a missing head packet of video_queue
++	ChiakiAvReorderStatsBox *av_reorder_stats; // may be NULL
+ 	ChiakiTakionSendBuffer send_buffer;
+ 
+ 	ChiakiTakionCallback cb;
+diff --git a/lib/src/avreorder.c b/lib/src/avreorder.c
+new file mode 100644
+index 0000000..347d2f4
+--- /dev/null
++++ b/lib/src/avreorder.c
+@@ -0,0 +1,402 @@
++// SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
++
++#include <chiaki/avreorder.h>
++
++#include <string.h>
++
++static uint32_t clamp_window(uint64_t v)
++{
++	if(v < CHIAKI_AV_REORDER_WINDOW_MIN_US)
++		return CHIAKI_AV_REORDER_WINDOW_MIN_US;
++	if(v > CHIAKI_AV_REORDER_WINDOW_MAX_US)
++		return CHIAKI_AV_REORDER_WINDOW_MAX_US;
++	return (uint32_t)v;
++}
++
++/**
++ * Peak halved for every half-life since it was set, with a linear step for the part of a half-life
++ * that has passed. Computed from the time of the peak, so it does not depend on how often it is called.
++ */
++static uint32_t decayed_peak(const ChiakiAvReorder *reorder, int64_t now_us)
++{
++	if(now_us <= reorder->peak_at_us)
++		return reorder->peak_us;
++	uint64_t elapsed = (uint64_t)(now_us - reorder->peak_at_us);
++	uint64_t halves = elapsed / CHIAKI_AV_REORDER_PEAK_HALF_LIFE_US;
++	if(halves >= 32)
++		return 0;
++	uint64_t v = (uint64_t)reorder->peak_us >> halves;
++	uint64_t frac = elapsed % CHIAKI_AV_REORDER_PEAK_HALF_LIFE_US;
++	v -= (v * frac) / (2 * (uint64_t)CHIAKI_AV_REORDER_PEAK_HALF_LIFE_US);
++	return (uint32_t)v;
++}
++
++static uint32_t target_window(uint32_t peak_us)
++{
++	return clamp_window((uint64_t)peak_us * 3 / 2 + 1000);
++}
++
++static void start_clock(ChiakiAvReorder *reorder, int64_t now_us)
++{
++	if(reorder->clock_started)
++		return;
++	reorder->clock_started = true;
++	reorder->peak_at_us = now_us;
++	reorder->last_decay_us = now_us;
++}
++
++static void set_window(ChiakiAvReorder *reorder, uint32_t window_us)
++{
++	if(window_us == reorder->window_us)
++		return;
++	reorder->window_us = window_us;
++	reorder->stats_dirty = true;
++}
++
++/**
++ * Let the window fall toward the target, at most CHIAKI_AV_REORDER_WINDOW_FALL_US_PER_S.
++ */
++static void decay(ChiakiAvReorder *reorder, int64_t now_us)
++{
++	start_clock(reorder, now_us);
++	if(!reorder->adaptive || now_us <= reorder->last_decay_us)
++		return;
++	uint32_t target = target_window(decayed_peak(reorder, now_us));
++	if(reorder->window_us <= target)
++	{
++		reorder->last_decay_us = now_us;
++		return;
++	}
++	uint64_t elapsed = (uint64_t)(now_us - reorder->last_decay_us);
++	uint64_t fall = elapsed * CHIAKI_AV_REORDER_WINDOW_FALL_US_PER_S / 1000000;
++	if(fall == 0)
++		return; // keep accumulating time instead of losing it to rounding
++	uint64_t window = reorder->window_us > fall ? reorder->window_us - fall : 0;
++	if(window <= target)
++	{
++		window = target;
++		reorder->last_decay_us = now_us;
++	}
++	else
++		reorder->last_decay_us += (int64_t)(fall * 1000000 / CHIAKI_AV_REORDER_WINDOW_FALL_US_PER_S);
++	set_window(reorder, (uint32_t)window);
++}
++
++/**
++ * A packet showed up `late_us` after its gap was noticed: the link reorders at least that much.
++ */
++static void observe_late(ChiakiAvReorder *reorder, int64_t late_us, int64_t now_us)
++{
++	decay(reorder, now_us);
++	if(late_us < 0)
++		late_us = 0;
++	if(late_us > 1000000)
++		late_us = 1000000;
++	uint32_t peak = decayed_peak(reorder, now_us);
++	if((uint32_t)late_us > peak)
++		peak = (uint32_t)late_us;
++	reorder->peak_us = peak;
++	reorder->peak_at_us = now_us;
++	if(reorder->adaptive)
++	{
++		uint32_t target = target_window(peak);
++		if(target > reorder->window_us)
++			set_window(reorder, target);
++	}
++	reorder->stats_dirty = true;
++}
++
++static void account_wait(ChiakiAvReorder *reorder, int64_t now_us)
++{
++	if(!reorder->head_waiting)
++		return;
++	int64_t waited = now_us - reorder->head_wait_start_us;
++	if(waited < 0)
++		waited = 0;
++	reorder->stats.wait_us_total += (uint64_t)waited;
++	uint32_t w = waited > (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)waited;
++	if(w > reorder->stats.wait_us_max)
++		reorder->stats.wait_us_max = w;
++	reorder->stats_dirty = true;
++}
++
++static void record_skip(ChiakiAvReorder *reorder, uint64_t first, uint64_t count, ChiakiAvReorderSkipReason reason)
++{
++	ChiakiAvReorderSkip *skip = &reorder->skipped[reorder->skipped_next];
++	skip->first = first;
++	skip->count = count;
++	skip->gap_start_us = reorder->head_wait_start_us;
++	skip->reason = reason;
++	reorder->skipped_next = (reorder->skipped_next + 1) % CHIAKI_AV_REORDER_SKIP_HISTORY;
++}
++
++static const ChiakiAvReorderSkip *find_skip(const ChiakiAvReorder *reorder, const ChiakiReorderQueue *queue, uint64_t seq_num)
++{
++	for(size_t i=0; i<CHIAKI_AV_REORDER_SKIP_HISTORY; i++)
++	{
++		const ChiakiAvReorderSkip *skip = &reorder->skipped[i];
++		if(skip->reason == CHIAKI_AV_REORDER_SKIP_NONE)
++			continue;
++		uint64_t end = queue->seq_num_add(skip->first, skip->count);
++		if(!queue->seq_num_lt(seq_num, skip->first) && queue->seq_num_lt(seq_num, end))
++			return skip;
++	}
++	return NULL;
++}
++
++static void publish(ChiakiAvReorder *reorder)
++{
++	if(!reorder->stats_dirty)
++		return;
++	reorder->stats_dirty = false;
++	reorder->stats.window_us = reorder->window_us;
++	reorder->stats.adaptive = reorder->adaptive;
++	if(!reorder->box)
++		return;
++	chiaki_mutex_lock(&reorder->box->mutex);
++	reorder->box->stats = reorder->stats;
++	chiaki_mutex_unlock(&reorder->box->mutex);
++}
++
++static void track_dispatch(ChiakiAvReorder *reorder, void *entry, ChiakiAvReorderUnitOf unit_of)
++{
++	ChiakiAvReorderUnit unit;
++	if(!unit_of(entry, &unit))
++		return;
++	ChiakiSeqNum16 first = (ChiakiSeqNum16)(unit.packet_index - unit.unit_index);
++	if(reorder->have_dispatch && unit.frame_index == reorder->dispatch_frame_index && first == reorder->dispatch_frame_first)
++	{
++		if(reorder->dispatch_frame_units < UINT16_MAX)
++			reorder->dispatch_frame_units++;
++		return;
++	}
++	reorder->have_dispatch = true;
++	reorder->dispatch_frame_index = unit.frame_index;
++	reorder->dispatch_frame_first = first;
++	reorder->dispatch_frame_total = unit.units_total;
++	reorder->dispatch_frame_fec = unit.units_fec;
++	reorder->dispatch_frame_units = 1;
++}
++
++// Packet indices are 16 bit and contiguous inside a frame (the takion queue is initialized the same way).
++static bool seq_in_frame(uint64_t seq_num, ChiakiSeqNum16 first, uint16_t total)
++{
++	return total > 0 && (ChiakiSeqNum16)((ChiakiSeqNum16)seq_num - first) < total;
++}
++
++/**
++ * Whether FEC can rebuild the frame of the missing sequence number with the units delivered and queued.
++ * Unknown frame => false (the old wait applies).
++ */
++static bool gap_rebuildable(ChiakiAvReorder *reorder, ChiakiReorderQueue *queue, uint64_t gap, ChiakiAvReorderUnitOf unit_of)
++{
++	bool known = false;
++	ChiakiSeqNum16 frame_index = 0, first = 0;
++	uint16_t total = 0, fec = 0;
++	if(reorder->have_dispatch && seq_in_frame(gap, reorder->dispatch_frame_first, reorder->dispatch_frame_total))
++	{
++		known = true;
++		frame_index = reorder->dispatch_frame_index;
++		first = reorder->dispatch_frame_first;
++		total = reorder->dispatch_frame_total;
++		fec = reorder->dispatch_frame_fec;
++	}
++	uint64_t seq_num;
++	void *entry;
++	ChiakiAvReorderUnit unit;
++	for(uint64_t i=0; !known && i<chiaki_reorder_queue_count(queue); i++)
++	{
++		if(!chiaki_reorder_queue_peek(queue, i, &seq_num, &entry) || !unit_of(entry, &unit))
++			continue;
++		ChiakiSeqNum16 unit_first = (ChiakiSeqNum16)(unit.packet_index - unit.unit_index);
++		if(!seq_in_frame(gap, unit_first, unit.units_total))
++			continue;
++		known = true;
++		frame_index = unit.frame_index;
++		first = unit_first;
++		total = unit.units_total;
++		fec = unit.units_fec;
++	}
++	if(!known || fec >= total)
++		return false;
++
++	uint32_t needed = (uint32_t)total - fec;
++	uint32_t available = 0;
++	if(reorder->have_dispatch && reorder->dispatch_frame_index == frame_index && reorder->dispatch_frame_first == first)
++		available = reorder->dispatch_frame_units;
++	for(uint64_t i=0; i<chiaki_reorder_queue_count(queue) && available < needed; i++)
++	{
++		if(!chiaki_reorder_queue_peek(queue, i, &seq_num, &entry) || !unit_of(entry, &unit))
++			continue;
++		if(unit.frame_index == frame_index && (ChiakiSeqNum16)(unit.packet_index - unit.unit_index) == first)
++			available++;
++	}
++	return available >= needed;
++}
++
++static void skip_head(ChiakiAvReorder *reorder, ChiakiReorderQueue *queue, uint64_t count, ChiakiAvReorderSkipReason reason, int64_t now_us)
++{
++	record_skip(reorder, queue->begin, count, reason);
++	account_wait(reorder, now_us);
++	queue->begin = queue->seq_num_add(queue->begin, count);
++	queue->count -= count;
++	reorder->head_waiting = false;
++	if(reason == CHIAKI_AV_REORDER_SKIP_FEC)
++		reorder->stats.fec_skips++;
++	else
++		reorder->stats.timeout_skips++;
++	reorder->stats_dirty = true;
++}
++
++CHIAKI_EXPORT void chiaki_av_reorder_init(ChiakiAvReorder *reorder, bool adaptive, ChiakiAvReorderStatsBox *box)
++{
++	memset(reorder, 0, sizeof(*reorder));
++	reorder->adaptive = adaptive;
++	reorder->window_us = CHIAKI_AV_REORDER_WINDOW_MAX_US;
++	reorder->peak_us = CHIAKI_AV_REORDER_WINDOW_MAX_US;
++	reorder->box = box;
++	reorder->stats_dirty = true;
++	publish(reorder);
++}
++
++CHIAKI_EXPORT void chiaki_av_reorder_on_arrival(ChiakiAvReorder *reorder, ChiakiReorderQueue *queue, uint64_t seq_num, int64_t now_us)
++{
++	start_clock(reorder, now_us);
++	if(reorder->head_waiting && seq_num == queue->begin)
++	{
++		reorder->stats.late_fills++;
++		observe_late(reorder, now_us - reorder->head_wait_start_us, now_us);
++	}
++	else if(queue->seq_num_lt(seq_num, queue->begin))
++	{
++		const ChiakiAvReorderSkip *skip = find_skip(reorder, queue, seq_num);
++		if(skip && skip->reason == CHIAKI_AV_REORDER_SKIP_TIMEOUT)
++		{
++			reorder->stats.too_late_timeout++;
++			observe_late(reorder, now_us - skip->gap_start_us, now_us);
++		}
++		else if(skip && skip->reason == CHIAKI_AV_REORDER_SKIP_FEC)
++		{
++			reorder->stats.too_late_fec++;
++			reorder->stats_dirty = true;
++			// Only reordered, and the old fixed wait would have delivered it: do not report it as lost.
++			if(now_us - skip->gap_start_us <= CHIAKI_AV_REORDER_WINDOW_MAX_US && reorder->box && reorder->box->packet_stats)
++				chiaki_packet_stats_push_late_unit(reorder->box->packet_stats);
++		}
++	}
++	publish(reorder);
++}
++
++CHIAKI_EXPORT void chiaki_av_reorder_flush(ChiakiAvReorder *reorder, ChiakiReorderQueue *queue, int64_t now_us,
++		ChiakiAvReorderUnitOf unit_of, ChiakiAvReorderDispatch dispatch, void *user)
++{
++	decay(reorder, now_us);
++	bool progress = true;
++	while(progress)
++	{
++		progress = false;
++
++		uint64_t seq_num;
++		void *entry;
++		while(chiaki_reorder_queue_pull(queue, &seq_num, &entry))
++		{
++			progress = true;
++			track_dispatch(reorder, entry, unit_of);
++			dispatch(seq_num, entry, user);
++		}
++		if(progress && reorder->head_waiting)
++		{
++			// the missing head arrived (or the queue moved past it)
++			account_wait(reorder, now_us);
++			reorder->head_waiting = false;
++		}
++
++		if(chiaki_reorder_queue_count(queue) == 0)
++			break;
++
++		// The head slot is missing (lost or not arrived yet).
++		if(!reorder->head_waiting)
++		{
++			reorder->head_waiting = true;
++			reorder->head_wait_start_us = now_us;
++			reorder->head_wait_seq_num = queue->begin;
++			reorder->stats.gaps++;
++			reorder->stats_dirty = true;
++		}
++		else if(queue->begin != reorder->head_wait_seq_num)
++		{
++			if(queue->seq_num_gt(queue->begin, reorder->head_wait_seq_num))
++			{
++				// The missing head advanced within the same loss burst (queue overflow):
++				// keep the original wait budget but track the new missing sequence number.
++				reorder->head_wait_seq_num = queue->begin;
++			}
++			else
++			{
++				account_wait(reorder, now_us);
++				reorder->head_wait_start_us = now_us;
++				reorder->head_wait_seq_num = queue->begin;
++				reorder->stats.gaps++;
++				reorder->stats_dirty = true;
++				break;
++			}
++		}
++
++		if(reorder->adaptive)
++		{
++			// Skip every missing packet at the head whose frame FEC can already rebuild.
++			uint64_t run = 0;
++			while(run < chiaki_reorder_queue_count(queue)
++					&& !chiaki_reorder_queue_peek(queue, run, &seq_num, &entry)
++					&& gap_rebuildable(reorder, queue, queue->seq_num_add(queue->begin, run), unit_of))
++				run++;
++			if(run > 0 && run < chiaki_reorder_queue_count(queue))
++			{
++				skip_head(reorder, queue, run, CHIAKI_AV_REORDER_SKIP_FEC, now_us);
++				progress = true;
++				continue;
++			}
++		}
++
++		if(now_us - reorder->head_wait_start_us <= (int64_t)reorder->window_us)
++			break;
++
++		// Window expired: skip directly to the first buffered packet so a burst only pays one wait.
++		uint64_t skipped = 0;
++		while(skipped < chiaki_reorder_queue_count(queue) && !chiaki_reorder_queue_peek(queue, skipped, &seq_num, &entry))
++			skipped++;
++		if(skipped == 0 || skipped >= chiaki_reorder_queue_count(queue))
++			break;
++		skip_head(reorder, queue, skipped, CHIAKI_AV_REORDER_SKIP_TIMEOUT, now_us);
++		progress = true;
++	}
++	publish(reorder);
++}
++
++CHIAKI_EXPORT int64_t chiaki_av_reorder_next_timeout_us(ChiakiAvReorder *reorder, int64_t now_us)
++{
++	if(!reorder->head_waiting)
++		return -1;
++	int64_t remaining = reorder->head_wait_start_us + (int64_t)reorder->window_us - now_us;
++	return remaining > 0 ? remaining : 0;
++}
++
++CHIAKI_EXPORT ChiakiErrorCode chiaki_av_reorder_stats_box_init(ChiakiAvReorderStatsBox *box)
++{
++	memset(&box->stats, 0, sizeof(box->stats));
++	box->stats.window_us = CHIAKI_AV_REORDER_WINDOW_MAX_US;
++	box->packet_stats = NULL;
++	return chiaki_mutex_init(&box->mutex, false);
++}
++
++CHIAKI_EXPORT void chiaki_av_reorder_stats_box_fini(ChiakiAvReorderStatsBox *box)
++{
++	chiaki_mutex_fini(&box->mutex);
++}
++
++CHIAKI_EXPORT void chiaki_av_reorder_stats_get(ChiakiAvReorderStatsBox *box, ChiakiAvReorderStats *out)
++{
++	chiaki_mutex_lock(&box->mutex);
++	*out = box->stats;
++	chiaki_mutex_unlock(&box->mutex);
++}
+diff --git a/lib/src/packetstats.c b/lib/src/packetstats.c
+index 58ef4c6..160de8b 100644
+--- a/lib/src/packetstats.c
++++ b/lib/src/packetstats.c
+@@ -13,6 +13,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_packet_stats_init(ChiakiPacketStats *stats)
+ 	assert(err == CHIAKI_ERR_SUCCESS);
+ 	stats->gen_received = 0;
+ 	stats->gen_lost = 0;
++	stats->gen_late_credit = 0;
+ 	stats->seq_min = 0;
+ 	stats->seq_max = 0;
+ 	stats->seq_received = 0;
+@@ -43,11 +44,23 @@ CHIAKI_EXPORT void chiaki_packet_stats_reset(ChiakiPacketStats *stats)
+ CHIAKI_EXPORT void chiaki_packet_stats_push_generation(ChiakiPacketStats *stats, uint64_t received, uint64_t lost)
+ {
+ 	chiaki_mutex_lock(&stats->mutex);
++	uint64_t credit = stats->gen_late_credit < lost ? stats->gen_late_credit : lost;
++	stats->gen_late_credit -= credit;
++	received += credit;
++	lost -= credit;
+ 	stats->gen_received += received;
+ 	stats->gen_lost += lost;
+ 	chiaki_mutex_unlock(&stats->mutex);
+ }
+ 
++CHIAKI_EXPORT void chiaki_packet_stats_push_late_unit(ChiakiPacketStats *stats)
++{
++	chiaki_mutex_lock(&stats->mutex);
++	if(stats->gen_late_credit < CHIAKI_PACKET_STATS_LATE_CREDIT_MAX)
++		stats->gen_late_credit++;
++	chiaki_mutex_unlock(&stats->mutex);
++}
++
+ CHIAKI_EXPORT void chiaki_packet_stats_push_seq(ChiakiPacketStats *stats, ChiakiSeqNum16 seq_num)
+ {
+ 	stats->seq_received++;
+diff --git a/lib/src/senkusha.c b/lib/src/senkusha.c
+index 05b4517..69dd689 100644
+--- a/lib/src/senkusha.c
++++ b/lib/src/senkusha.c
+@@ -133,6 +133,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_senkusha_run(ChiakiSenkusha *senkusha, uint
+ 
+ 	ChiakiTakionConnectInfo takion_info;
+ 	takion_info.log = senkusha->log;
++	takion_info.av_reorder_stats = NULL;
+ 	if(!socket)
+ 	{
+ 		takion_info.close_socket = true;
+diff --git a/lib/src/streamconnection.c b/lib/src/streamconnection.c
+index afa1a60..9ecd0d0 100644
+--- a/lib/src/streamconnection.c
++++ b/lib/src/streamconnection.c
+@@ -90,13 +90,18 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_init(ChiakiStreamConnecti
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		goto error_state_cond;
+ 
++	err = chiaki_av_reorder_stats_box_init(&stream_connection->av_reorder_stats);
++	if(err != CHIAKI_ERR_SUCCESS)
++		goto error_packet_stats;
++	stream_connection->av_reorder_stats.packet_stats = &stream_connection->packet_stats;
++
+ 	stream_connection->video_receiver = NULL;
+ 	stream_connection->audio_receiver = NULL;
+ 	stream_connection->haptics_receiver = NULL;
+ 
+ 	err = chiaki_mutex_init(&stream_connection->feedback_sender_mutex, false);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+-		goto error_packet_stats;
++		goto error_av_reorder_stats;
+ 
+ 	stream_connection->state = STATE_IDLE;
+ 	stream_connection->state_finished = false;
+@@ -107,6 +112,8 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_init(ChiakiStreamConnecti
+ 
+ 	return CHIAKI_ERR_SUCCESS;
+ 
++error_av_reorder_stats:
++	chiaki_av_reorder_stats_box_fini(&stream_connection->av_reorder_stats);
+ error_packet_stats:
+ 	chiaki_packet_stats_fini(&stream_connection->packet_stats);
+ error_state_cond:
+@@ -129,6 +136,7 @@ CHIAKI_EXPORT void chiaki_stream_connection_fini(ChiakiStreamConnection *stream_
+ 		chiaki_congestion_control_stop(&stream_connection->congestion_control);
+ 
+ 	chiaki_packet_stats_fini(&stream_connection->packet_stats);
++	chiaki_av_reorder_stats_box_fini(&stream_connection->av_reorder_stats);
+ 
+ 	chiaki_mutex_fini(&stream_connection->feedback_sender_mutex);
+ 
+@@ -151,6 +159,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
+ 	takion_info.log = stream_connection->log;
+ 	takion_info.disable_audio_video = stream_connection->session->connect_info.disable_audio_video;
+ 	takion_info.close_socket = true;
++	takion_info.av_reorder_stats = &stream_connection->av_reorder_stats;
+ 	if(!socket)
+ 	{
+ 		takion_info.sa_len = session->connect_info.host_addrinfo_selected->ai_addrlen;
+@@ -1300,3 +1309,8 @@ CHIAKI_EXPORT ChiakiErrorCode stream_connection_send_idr_request(ChiakiStreamCon
+ 	CHIAKI_LOGI(stream_connection->log, "StreamConnection requesting IDR frame");
+ 	return chiaki_takion_send_message_data(&stream_connection->takion, 1, 2, buf, stream.bytes_written, NULL);
+ }
++
++CHIAKI_EXPORT void chiaki_stream_connection_av_reorder_stats(ChiakiStreamConnection *stream_connection, ChiakiAvReorderStats *out)
++{
++	chiaki_av_reorder_stats_get(&stream_connection->av_reorder_stats, out);
++}
+diff --git a/lib/src/takion.c b/lib/src/takion.c
+index f3d8f13..1744bf4 100644
+--- a/lib/src/takion.c
++++ b/lib/src/takion.c
+@@ -46,7 +46,6 @@
+ 
+ #define TAKION_REORDER_QUEUE_SIZE_EXP 4 // => 16 entries
+ #define TAKION_AV_VIDEO_REORDER_QUEUE_SIZE_EXP 6 // => 64 entries
+-#define TAKION_AV_REORDER_TIMEOUT_US 16000 // ~1 frame at 60fps
+ #define TAKION_SEND_BUFFER_SIZE 16
+ 
+ #define TAKION_POSTPONE_PACKETS_SIZE 32
+@@ -200,6 +199,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
+ 	takion->close_socket = info->close_socket;
+ 	takion->version = info->protocol_version;
+ 	takion->disable_audio_video = info->disable_audio_video;
++	takion->av_reorder_stats = info->av_reorder_stats;
+ 
+ 	switch(takion->version)
+ 	{
+@@ -938,128 +938,55 @@ static void takion_av_drop(uint64_t seq_num, void *elem_user, void *cb_user)
+ 	free(entry);
+ }
+ 
+-/**
+- * Pull and dispatch all in-order entries from the given AV queue.
+- * If the head packet is missing, wait up to TAKION_AV_REORDER_TIMEOUT_US before
+- * skipping it, then retry. This handles WiFi jitter without stalling on lost packets.
+- */
+-static void takion_av_queue_flush_with_timeout(ChiakiTakion *takion, ChiakiReorderQueue *queue,
+-		int64_t *head_wait_start_us, uint64_t *head_wait_seq_num)
++static bool takion_av_entry_unit(void *entry_user, ChiakiAvReorderUnit *out)
+ {
+-	int64_t now = chiaki_time_now_monotonic_us();
+-	bool made_progress = true;
++	TakionAVPacketEntry *entry = entry_user;
++	out->packet_index = entry->packet.packet_index;
++	out->frame_index = entry->packet.frame_index;
++	out->unit_index = entry->packet.unit_index;
++	out->units_total = entry->packet.units_in_frame_total;
++	out->units_fec = entry->packet.units_in_frame_fec;
++	return true;
++}
+ 
+-	while(made_progress)
++static void takion_av_dispatch(uint64_t seq_num, void *entry_user, void *user)
++{
++	(void)seq_num;
++	ChiakiTakion *takion = user;
++	TakionAVPacketEntry *entry = entry_user;
++	if(takion->cb)
+ 	{
+-		made_progress = false;
+-
+-		uint64_t seq_num;
+-		TakionAVPacketEntry *entry;
+-		while(chiaki_reorder_queue_pull(queue, &seq_num, (void **)&entry))
+-		{
+-			made_progress = true;
+-			if(takion->cb)
+-			{
+-				ChiakiTakionEvent event = { 0 };
+-				event.type = CHIAKI_TAKION_EVENT_TYPE_AV;
+-				event.av = &entry->packet;
+-				takion->cb(&event, takion->cb_user);
+-			}
+-			free(entry->buf);
+-			free(entry);
+-		}
+-
+-		if(made_progress)
+-			*head_wait_start_us = 0;
+-
+-		if(chiaki_reorder_queue_count(queue) == 0)
+-			break;
+-
+-		if(*head_wait_start_us != 0 && queue->begin != *head_wait_seq_num)
+-		{
+-			if(queue->seq_num_gt(queue->begin, *head_wait_seq_num))
+-			{
+-				// The missing head advanced within the same loss burst. Keep the
+-				// original timeout budget but track the new missing sequence.
+-				*head_wait_seq_num = queue->begin;
+-			}
+-			else
+-			{
+-				// A genuinely new gap appeared; start a fresh timeout window.
+-				*head_wait_start_us = now;
+-				*head_wait_seq_num = queue->begin;
+-				break;
+-			}
+-		}
+-
+-		// Head slot is missing (packet lost or not yet arrived)
+-		if(*head_wait_start_us == 0)
+-		{
+-			*head_wait_start_us = now;
+-			*head_wait_seq_num = queue->begin;
+-			break;
+-		}
+-
+-		if(now - *head_wait_start_us <= TAKION_AV_REORDER_TIMEOUT_US)
+-			break;
+-
+-		// Timeout exceeded: skip directly to the first buffered packet so startup
+-		// and burst reordering only pay a single timeout.
+-		uint64_t skipped = 0;
+-		while(skipped < queue->count)
+-		{
+-			uint64_t seq_num_peek;
+-			void *entry_user;
+-			if(chiaki_reorder_queue_peek(queue, skipped, &seq_num_peek, &entry_user))
+-				break;
+-			skipped++;
+-		}
+-		if(skipped >= queue->count)
+-			break;
+-
+-		CHIAKI_LOGD(takion->log, "Takion AV reorder timeout: skipping %llu missing packet(s) before %#llx",
+-			(unsigned long long)skipped,
+-			(unsigned long long)queue->seq_num_add(queue->begin, skipped));
+-		queue->begin = queue->seq_num_add(queue->begin, skipped);
+-		queue->count -= skipped;
+-		*head_wait_start_us = 0;
+-		made_progress = true;
++		ChiakiTakionEvent event = { 0 };
++		event.type = CHIAKI_TAKION_EVENT_TYPE_AV;
++		event.av = &entry->packet;
++		takion->cb(&event, takion->cb_user);
+ 	}
++	free(entry->buf);
++	free(entry);
+ }
+ 
++/**
++ * Pull and dispatch everything the video queue can deliver now.
++ * The wait policy for a missing head packet lives in avreorder.c.
++ */
+ static void takion_av_queues_flush_with_timeout(ChiakiTakion *takion)
+ {
+-	if(takion->video_queue_initialized)
+-	{
+-		takion_av_queue_flush_with_timeout(takion, &takion->video_queue,
+-			&takion->video_queue_head_wait_start_us, &takion->video_queue_head_wait_seq_num);
+-	}
++	if(!takion->video_queue_initialized)
++		return;
++	chiaki_av_reorder_flush(&takion->video_reorder, &takion->video_queue, chiaki_time_now_monotonic_us(),
++		takion_av_entry_unit, takion_av_dispatch, takion);
+ }
+ 
+ static uint64_t takion_av_queues_next_timeout_ms(ChiakiTakion *takion)
+ {
+-	int64_t now = chiaki_time_now_monotonic_us();
+-	uint64_t timeout_ms = UINT64_MAX;
+-	int64_t *head_waits[] = {
+-		&takion->video_queue_head_wait_start_us,
+-	};
+-
+-	for(size_t i=0; i<sizeof(head_waits) / sizeof(head_waits[0]); i++)
+-	{
+-		int64_t head_wait_start_us = *head_waits[i];
+-		if(head_wait_start_us == 0)
+-			continue;
+-
+-		int64_t remaining_us = TAKION_AV_REORDER_TIMEOUT_US - (now - head_wait_start_us);
+-		if(remaining_us <= 0)
+-			return 0;
+-
+-		uint64_t candidate_timeout_ms = (uint64_t)((remaining_us + 999) / 1000);
+-		if(candidate_timeout_ms < timeout_ms)
+-			timeout_ms = candidate_timeout_ms;
+-	}
+-
+-	return timeout_ms;
++	if(!takion->video_queue_initialized)
++		return UINT64_MAX;
++	int64_t remaining_us = chiaki_av_reorder_next_timeout_us(&takion->video_reorder, chiaki_time_now_monotonic_us());
++	if(remaining_us < 0)
++		return UINT64_MAX;
++	if(remaining_us == 0)
++		return 0;
++	return (uint64_t)((remaining_us + 999) / 1000);
+ }
+ 
+ static void *takion_thread_func(void *user)
+@@ -1068,8 +995,7 @@ static void *takion_thread_func(void *user)
+ 	chiaki_thread_set_affinity(CHIAKI_THREAD_NAME_TAKION);
+ 
+ 	takion->video_queue_initialized = false;
+-	takion->video_queue_head_wait_start_us = 0;
+-	takion->video_queue_head_wait_seq_num = 0;
++	chiaki_av_reorder_init(&takion->video_reorder, CHIAKI_AV_REORDER_ADAPTIVE_DEFAULT, takion->av_reorder_stats);
+ 
+ 	uint32_t seq_num_remote_initial;
+ 	if(takion_handshake(takion, &seq_num_remote_initial) != CHIAKI_ERR_SUCCESS)
+@@ -1672,8 +1598,6 @@ static void takion_handle_packet_av(ChiakiTakion *takion, uint8_t base_type, uin
+ 	}
+ 	ChiakiReorderQueue *queue = &takion->video_queue;
+ 	bool *initialized = &takion->video_queue_initialized;
+-	int64_t *head_wait = &takion->video_queue_head_wait_start_us;
+-	uint64_t *head_wait_seq_num = &takion->video_queue_head_wait_seq_num;
+ 	size_t size_exp = TAKION_AV_VIDEO_REORDER_QUEUE_SIZE_EXP;
+ 
+ 	if(!*initialized)
+@@ -1697,8 +1621,6 @@ static void takion_handle_packet_av(ChiakiTakion *takion, uint8_t base_type, uin
+ 		chiaki_reorder_queue_set_drop_strategy(queue, CHIAKI_REORDER_QUEUE_DROP_STRATEGY_BEGIN);
+ 		chiaki_reorder_queue_set_drop_cb(queue, takion_av_drop, takion);
+ 		*initialized = true;
+-		*head_wait = 0;
+-		*head_wait_seq_num = queue_begin;
+ 	}
+ 
+ 	TakionAVPacketEntry *entry = malloc(sizeof(TakionAVPacketEntry));
+@@ -1712,8 +1634,10 @@ static void takion_handle_packet_av(ChiakiTakion *takion, uint8_t base_type, uin
+ 	entry->buf_size = buf_size;
+ 	entry->packet = packet;
+ 
++	int64_t now_us = chiaki_time_now_monotonic_us();
++	chiaki_av_reorder_on_arrival(&takion->video_reorder, queue, packet.packet_index, now_us);
+ 	chiaki_reorder_queue_push(queue, packet.packet_index, entry);
+-	takion_av_queue_flush_with_timeout(takion, queue, head_wait, head_wait_seq_num);
++	chiaki_av_reorder_flush(&takion->video_reorder, queue, now_us, takion_av_entry_unit, takion_av_dispatch, takion);
+ }
+ 
+ static ChiakiErrorCode av_packet_parse(bool v12, ChiakiTakionAVPacket *packet, ChiakiKeyState *key_state, uint8_t *buf, size_t buf_size)
+diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
+index 4480c43..92438fc 100644
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@ -16,6 +16,7 @@ set(CHIAKI_UNIT_SOURCES
+ 				test_log.c
+ 				test_log.h
+ 				bitstream.c
++				avreorder.c
+ 				regist.c)
+ 
+ if(CHIAKI_ENABLE_FFMPEG_DECODER)
+diff --git a/test/avreorder.c b/test/avreorder.c
+new file mode 100644
+index 0000000..7bb9017
+--- /dev/null
++++ b/test/avreorder.c
+@@ -0,0 +1,716 @@
++// SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
++
++#include <munit.h>
++
++#include <chiaki/avreorder.h>
++
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++
++typedef struct fake_entry_t
++{
++	ChiakiAvReorderUnit unit;
++	uint64_t id;
++} FakeEntry;
++
++#define LOG_MAX 256
++
++typedef struct harness_t
++{
++	ChiakiReorderQueue queue;
++	ChiakiAvReorder reorder;
++	FakeEntry entries[LOG_MAX];
++	size_t entries_count;
++	uint64_t dispatched_seq[LOG_MAX];
++	int64_t dispatched_at[LOG_MAX];
++	size_t dispatched_count;
++	size_t dropped_count;
++	int64_t now;
++} Harness;
++
++static bool unit_of(void *entry, ChiakiAvReorderUnit *out)
++{
++	*out = ((FakeEntry *)entry)->unit;
++	return true;
++}
++
++static void dispatch(uint64_t seq_num, void *entry, void *user)
++{
++	(void)entry;
++	Harness *h = user;
++	if(h->dispatched_count < LOG_MAX)
++	{
++		h->dispatched_seq[h->dispatched_count] = seq_num;
++		h->dispatched_at[h->dispatched_count] = h->now;
++		h->dispatched_count++;
++	}
++}
++
++static void drop(uint64_t seq_num, void *elem_user, void *cb_user)
++{
++	(void)seq_num;
++	(void)elem_user;
++	((Harness *)cb_user)->dropped_count++;
++}
++
++static void harness_init(Harness *h, bool adaptive, ChiakiSeqNum16 first_seq)
++{
++	memset(h, 0, sizeof(*h));
++	munit_assert_int(chiaki_reorder_queue_init_16(&h->queue, 6, first_seq), ==, CHIAKI_ERR_SUCCESS);
++	chiaki_reorder_queue_set_drop_strategy(&h->queue, CHIAKI_REORDER_QUEUE_DROP_STRATEGY_BEGIN);
++	chiaki_reorder_queue_set_drop_cb(&h->queue, drop, h);
++	chiaki_av_reorder_init(&h->reorder, adaptive, NULL);
++}
++
++static void harness_fini(Harness *h)
++{
++	chiaki_reorder_queue_fini(&h->queue);
++}
++
++static void flush_at(Harness *h, int64_t now)
++{
++	h->now = now;
++	chiaki_av_reorder_flush(&h->reorder, &h->queue, now, unit_of, dispatch, h);
++}
++
++/**
++ * Packet `unit_index` of the frame `frame_index` whose first packet has sequence number `first`.
++ */
++static void arrive(Harness *h, int64_t now, ChiakiSeqNum16 frame_index, ChiakiSeqNum16 first, uint16_t unit_index,
++		uint16_t total, uint16_t fec)
++{
++	munit_assert_size(h->entries_count, <, LOG_MAX);
++	FakeEntry *e = &h->entries[h->entries_count++];
++	e->unit.frame_index = frame_index;
++	e->unit.packet_index = (ChiakiSeqNum16)(first + unit_index);
++	e->unit.unit_index = unit_index;
++	e->unit.units_total = total;
++	e->unit.units_fec = fec;
++	h->now = now;
++	chiaki_av_reorder_on_arrival(&h->reorder, &h->queue, e->unit.packet_index, now);
++	chiaki_reorder_queue_push(&h->queue, e->unit.packet_index, e);
++	flush_at(h, now);
++}
++
++static bool was_dispatched(Harness *h, uint64_t seq, int64_t *at)
++{
++	for(size_t i=0; i<h->dispatched_count; i++)
++	{
++		if(h->dispatched_seq[i] == seq)
++		{
++			if(at)
++				*at = h->dispatched_at[i];
++			return true;
++		}
++	}
++	return false;
++}
++
++// A source unit is missing, the rest of the frame (with FEC) arrives: no wait at all.
++static MunitResult test_fec_skip_now(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	Harness h;
++	harness_init(&h, true, 100);
++	// frame 7: 6 units, 2 of them FEC => 4 needed. Unit 2 (seq 102) is lost.
++	arrive(&h, 0, 7, 100, 0, 6, 2);
++	arrive(&h, 100, 7, 100, 1, 6, 2);
++	arrive(&h, 1000, 7, 100, 3, 6, 2); // 2 delivered + 1 queued = 3 < 4: must wait
++	munit_assert(!was_dispatched(&h, 103, NULL));
++	arrive(&h, 1100, 7, 100, 4, 6, 2); // 2 + 2 = 4: rebuildable, skip at once
++	int64_t at = -1;
++	munit_assert(was_dispatched(&h, 103, &at));
++	munit_assert_int64(at, ==, 1100);
++	munit_assert(was_dispatched(&h, 104, &at));
++	munit_assert_int64(at, ==, 1100);
++	munit_assert_uint64(h.reorder.stats.gaps, ==, 1);
++	munit_assert_uint64(h.reorder.stats.fec_skips, ==, 1);
++	munit_assert_uint64(h.reorder.stats.timeout_skips, ==, 0);
++	munit_assert_uint64(h.reorder.stats.wait_us_total, ==, 100); // noticed at 1000, skipped at 1100
++	harness_fini(&h);
++	return MUNIT_OK;
++}
++
++// The old policy on the same input waits the full 16 ms.
++static MunitResult test_legacy_waits_16ms(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	Harness h;
++	harness_init(&h, false, 100);
++	arrive(&h, 0, 7, 100, 0, 6, 2);
++	arrive(&h, 100, 7, 100, 1, 6, 2);
++	arrive(&h, 1000, 7, 100, 3, 6, 2);
++	arrive(&h, 1100, 7, 100, 4, 6, 2);
++	munit_assert(!was_dispatched(&h, 103, NULL));
++	munit_assert_int64(chiaki_av_reorder_next_timeout_us(&h.reorder, 1100), ==, 15900);
++	flush_at(&h, 1000 + 16000);
++	munit_assert(!was_dispatched(&h, 103, NULL)); // still inside the window (<=)
++	flush_at(&h, 1000 + 16001);
++	int64_t at = -1;
++	munit_assert(was_dispatched(&h, 103, &at));
++	munit_assert_int64(at, ==, 17001);
++	munit_assert_uint64(h.reorder.stats.fec_skips, ==, 0);
++	munit_assert_uint64(h.reorder.stats.timeout_skips, ==, 1);
++	munit_assert_uint32(h.reorder.window_us, ==, CHIAKI_AV_REORDER_WINDOW_MAX_US);
++	harness_fini(&h);
++	return MUNIT_OK;
++}
++
++// The last FEC unit of a frame that is already complete is lost: the next frame must not wait.
++static MunitResult test_fec_unit_of_complete_frame(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	Harness h;
++	harness_init(&h, true, 100);
++	for(uint16_t u=0; u<5; u++)
++		arrive(&h, u * 100, 7, 100, u, 6, 2); // units 0..4 of frame 7, unit 5 (seq 105) lost
++	arrive(&h, 2000, 8, 106, 0, 6, 2); // first packet of frame 8
++	int64_t at = -1;
++	munit_assert(was_dispatched(&h, 106, &at));
++	munit_assert_int64(at, ==, 2000);
++	munit_assert_uint64(h.reorder.stats.fec_skips, ==, 1);
++	harness_fini(&h);
++	return MUNIT_OK;
++}
++
++// The first packet of the next frame is missing. It belongs to the new frame (no FEC), not to the
++// complete previous one, so it must be waited for.
++static MunitResult test_gap_after_frame_end_is_next_frame(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	Harness h;
++	harness_init(&h, true, 100);
++	for(uint16_t u=0; u<6; u++)
++		arrive(&h, u * 100, 7, 100, u, 6, 2); // frame 7 complete
++	arrive(&h, 2000, 8, 106, 1, 4, 0); // frame 8 without FEC, seq 106 missing
++	munit_assert(!was_dispatched(&h, 107, NULL));
++	munit_assert_uint64(h.reorder.stats.fec_skips, ==, 0);
++	harness_fini(&h);
++	return MUNIT_OK;
++}
++
++// A frame without FEC cannot be rebuilt: wait for the window, then skip.
++static MunitResult test_unrecoverable_waits_window(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	Harness h;
++	harness_init(&h, true, 100);
++	arrive(&h, 0, 7, 100, 0, 4, 0);
++	arrive(&h, 1000, 7, 100, 2, 4, 0); // seq 101 missing, noticed at 1000
++	munit_assert(!was_dispatched(&h, 102, NULL));
++	munit_assert_int64(chiaki_av_reorder_next_timeout_us(&h.reorder, 1000), ==, 16000);
++	flush_at(&h, 17000);
++	munit_assert(!was_dispatched(&h, 102, NULL));
++	flush_at(&h, 17001);
++	munit_assert(was_dispatched(&h, 102, NULL));
++	munit_assert_uint64(h.reorder.stats.timeout_skips, ==, 1);
++	munit_assert_uint64(h.reorder.stats.fec_skips, ==, 0);
++	munit_assert_int64(chiaki_av_reorder_next_timeout_us(&h.reorder, 17001), ==, -1);
++	harness_fini(&h);
++	return MUNIT_OK;
++}
++
++// A reordered packet that arrives inside the window is delivered in order.
++static MunitResult test_late_fill(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	Harness h;
++	harness_init(&h, true, 100);
++	arrive(&h, 0, 7, 100, 0, 4, 0);
++	arrive(&h, 1000, 7, 100, 2, 4, 0);
++	arrive(&h, 4000, 7, 100, 1, 4, 0); // 3 ms late
++	munit_assert_size(h.dispatched_count, ==, 3);
++	munit_assert_uint64(h.dispatched_seq[1], ==, 101);
++	munit_assert_uint64(h.dispatched_seq[2], ==, 102);
++	munit_assert_int64(h.dispatched_at[2], ==, 4000);
++	munit_assert_uint64(h.reorder.stats.late_fills, ==, 1);
++	munit_assert_uint64(h.reorder.stats.wait_us_total, ==, 3000);
++	munit_assert_uint32(h.reorder.stats.wait_us_max, ==, 3000);
++	harness_fini(&h);
++	return MUNIT_OK;
++}
++
++static void idle_until(Harness *h, int64_t from, int64_t to, int64_t step)
++{
++	for(int64_t t=from; t<=to; t+=step)
++		flush_at(h, t);
++}
++
++// Without reordering the window falls from the ceiling to the floor within 10 s, never instantly.
++static MunitResult test_window_decays(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	Harness h;
++	harness_init(&h, true, 100);
++	munit_assert_uint32(h.reorder.window_us, ==, CHIAKI_AV_REORDER_WINDOW_MAX_US);
++	uint32_t last = h.reorder.window_us;
++	uint32_t at_2s = 0;
++	for(int64_t t=0; t<=10000000; t+=10000)
++	{
++		flush_at(&h, t);
++		munit_assert_uint32(h.reorder.window_us, <=, last);
++		last = h.reorder.window_us;
++		if(t == 2000000)
++			at_2s = h.reorder.window_us;
++	}
++	munit_assert_uint32(at_2s, >, CHIAKI_AV_REORDER_WINDOW_MIN_US + 4000);
++	munit_assert_uint32(h.reorder.window_us, ==, CHIAKI_AV_REORDER_WINDOW_MIN_US);
++	harness_fini(&h);
++	return MUNIT_OK;
++}
++
++// A packet that shows up after its gap was skipped on timeout raises the window at once.
++// One skipped through FEC cost nothing and must not raise it.
++static MunitResult test_too_late_raises_window(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	Harness h;
++	harness_init(&h, true, 100);
++	idle_until(&h, 0, 10000000, 10000);
++	munit_assert_uint32(h.reorder.window_us, ==, CHIAKI_AV_REORDER_WINDOW_MIN_US);
++
++	const int64_t t0 = 10000000;
++	// FEC-skipped gap, its packet comes later: no change.
++	arrive(&h, t0, 7, 100, 0, 6, 2);
++	arrive(&h, t0 + 100, 7, 100, 2, 6, 2);
++	arrive(&h, t0 + 200, 7, 100, 3, 6, 2);
++	arrive(&h, t0 + 300, 7, 100, 4, 6, 2); // 1 + 3 = 4: seq 101 skipped through FEC
++	munit_assert_uint64(h.reorder.stats.fec_skips, ==, 1);
++	arrive(&h, t0 + 400, 7, 100, 5, 6, 2);
++	arrive(&h, t0 + 900, 7, 100, 1, 6, 2); // the skipped one, too late
++	munit_assert_uint64(h.reorder.stats.too_late_fec, ==, 1);
++	munit_assert_uint32(h.reorder.window_us, ==, CHIAKI_AV_REORDER_WINDOW_MIN_US);
++
++	// Unrecoverable frame 8 (no FEC), seq 107 missing, noticed at t1, skipped on timeout.
++	const int64_t t1 = t0 + 20000;
++	arrive(&h, t1 - 100, 8, 106, 0, 4, 0);
++	arrive(&h, t1, 8, 106, 2, 4, 0);
++	flush_at(&h, t1 + CHIAKI_AV_REORDER_WINDOW_MIN_US + 1);
++	munit_assert_uint64(h.reorder.stats.timeout_skips, ==, 1);
++	// It arrives 5 ms after the gap was noticed: window = 5000 * 3 / 2 + 1000 = 8500.
++	arrive(&h, t1 + 5000, 8, 106, 1, 4, 0);
++	munit_assert_uint64(h.reorder.stats.too_late_timeout, ==, 1);
++	munit_assert_uint32(h.reorder.window_us, ==, 8500);
++	harness_fini(&h);
++	return MUNIT_OK;
++}
++
++// The old policy keeps 16 ms no matter how long the link stays clean.
++static MunitResult test_legacy_window_fixed(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	Harness h;
++	harness_init(&h, false, 100);
++	idle_until(&h, 0, 10000000, 10000);
++	munit_assert_uint32(h.reorder.window_us, ==, CHIAKI_AV_REORDER_WINDOW_MAX_US);
++	munit_assert(!h.reorder.stats.adaptive);
++	harness_fini(&h);
++	return MUNIT_OK;
++}
++
++// Sequence numbers wrap from 65535 to 0 inside the frame.
++static MunitResult test_wraparound(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	Harness h;
++	harness_init(&h, true, 65533);
++	// frame 9: seqs 65533 65534 65535 0 1 2, 2 FEC; 65535 (unit 2) lost.
++	arrive(&h, 0, 9, 65533, 0, 6, 2);
++	arrive(&h, 100, 9, 65533, 1, 6, 2);
++	arrive(&h, 300, 9, 65533, 3, 6, 2);
++	munit_assert_size(h.dispatched_count, ==, 2);
++	arrive(&h, 400, 9, 65533, 4, 6, 2);
++	munit_assert_size(h.dispatched_count, ==, 4);
++	munit_assert_uint64(h.dispatched_seq[2], ==, 0);
++	munit_assert_uint64(h.dispatched_seq[3], ==, 1);
++	munit_assert_uint64(h.reorder.stats.fec_skips, ==, 1);
++	harness_fini(&h);
++	return MUNIT_OK;
++}
++
++// A FEC-skipped packet that still arrives inside the old 16 ms wait was only reordered: the old policy
++// would have delivered it, so the loss report sent to the console must not count it as lost.
++static MunitResult test_late_fec_packet_not_reported_lost(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	ChiakiPacketStats packet_stats;
++	munit_assert_int(chiaki_packet_stats_init(&packet_stats), ==, CHIAKI_ERR_SUCCESS);
++	ChiakiAvReorderStatsBox box;
++	munit_assert_int(chiaki_av_reorder_stats_box_init(&box), ==, CHIAKI_ERR_SUCCESS);
++	box.packet_stats = &packet_stats;
++	Harness h;
++	harness_init(&h, true, 100);
++	chiaki_av_reorder_init(&h.reorder, true, &box);
++	uint64_t received = 0, lost = 0;
++
++	// frame 7, seq 101 skipped through FEC (gap noticed at 100), arrives 2.9 ms later
++	arrive(&h, 0, 7, 100, 0, 6, 2);
++	arrive(&h, 100, 7, 100, 2, 6, 2);
++	arrive(&h, 200, 7, 100, 3, 6, 2);
++	arrive(&h, 300, 7, 100, 4, 6, 2);
++	arrive(&h, 400, 7, 100, 5, 6, 2);
++	arrive(&h, 3000, 7, 100, 1, 6, 2);
++	munit_assert_uint64(h.reorder.stats.too_late_fec, ==, 1);
++	chiaki_packet_stats_push_generation(&packet_stats, 5, 1); // what the frame processor reports for frame 7
++	chiaki_packet_stats_get(&packet_stats, true, &received, &lost);
++	munit_assert_uint64(received, ==, 6);
++	munit_assert_uint64(lost, ==, 0);
++
++	// frame 8, seq 107 skipped through FEC (gap noticed at 20100), arrives 17 ms later: lost for the old policy too
++	arrive(&h, 20000, 8, 106, 0, 6, 2);
++	arrive(&h, 20100, 8, 106, 2, 6, 2);
++	arrive(&h, 20200, 8, 106, 3, 6, 2);
++	arrive(&h, 20300, 8, 106, 4, 6, 2);
++	arrive(&h, 20400, 8, 106, 5, 6, 2);
++	arrive(&h, 20100 + 17000, 8, 106, 1, 6, 2);
++	munit_assert_uint64(h.reorder.stats.too_late_fec, ==, 2);
++	chiaki_packet_stats_push_generation(&packet_stats, 5, 1);
++	chiaki_packet_stats_get(&packet_stats, true, &received, &lost);
++	munit_assert_uint64(received, ==, 5);
++	munit_assert_uint64(lost, ==, 1);
++
++	harness_fini(&h);
++	chiaki_av_reorder_stats_box_fini(&box);
++	chiaki_packet_stats_fini(&packet_stats);
++	return MUNIT_OK;
++}
++
++// A credit never makes the loss negative, carries over to the next report, and is bounded.
++static MunitResult test_packet_stats_late_credit(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	ChiakiPacketStats stats;
++	munit_assert_int(chiaki_packet_stats_init(&stats), ==, CHIAKI_ERR_SUCCESS);
++	uint64_t received = 0, lost = 0;
++	chiaki_packet_stats_push_late_unit(&stats);
++	chiaki_packet_stats_push_late_unit(&stats);
++	chiaki_packet_stats_push_generation(&stats, 10, 1);
++	chiaki_packet_stats_get(&stats, true, &received, &lost);
++	munit_assert_uint64(received, ==, 11);
++	munit_assert_uint64(lost, ==, 0);
++	chiaki_packet_stats_push_generation(&stats, 5, 3); // the second credit is used here
++	chiaki_packet_stats_get(&stats, true, &received, &lost);
++	munit_assert_uint64(received, ==, 6);
++	munit_assert_uint64(lost, ==, 2);
++	for(int i=0; i<1000; i++)
++		chiaki_packet_stats_push_late_unit(&stats);
++	chiaki_packet_stats_push_generation(&stats, 0, 1000);
++	chiaki_packet_stats_get(&stats, true, &received, &lost);
++	munit_assert_uint64(received, ==, CHIAKI_PACKET_STATS_LATE_CREDIT_MAX);
++	munit_assert_uint64(lost, ==, 1000 - CHIAKI_PACKET_STATS_LATE_CREDIT_MAX);
++	chiaki_packet_stats_fini(&stats);
++	return MUNIT_OK;
++}
++
++// Statistics published to the box match the internal ones.
++static MunitResult test_stats_box(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	ChiakiAvReorderStatsBox box;
++	munit_assert_int(chiaki_av_reorder_stats_box_init(&box), ==, CHIAKI_ERR_SUCCESS);
++	Harness h;
++	harness_init(&h, true, 100);
++	chiaki_av_reorder_init(&h.reorder, true, &box);
++	arrive(&h, 0, 7, 100, 0, 6, 2);
++	arrive(&h, 100, 7, 100, 1, 6, 2);
++	arrive(&h, 1000, 7, 100, 3, 6, 2);
++	arrive(&h, 1100, 7, 100, 4, 6, 2);
++	ChiakiAvReorderStats out;
++	chiaki_av_reorder_stats_get(&box, &out);
++	munit_assert_uint64(out.gaps, ==, 1);
++	munit_assert_uint64(out.fec_skips, ==, 1);
++	munit_assert_uint64(out.wait_us_total, ==, 100);
++	munit_assert(out.adaptive);
++	munit_assert_uint32(out.window_us, ==, h.reorder.window_us);
++	harness_fini(&h);
++	chiaki_av_reorder_stats_box_fini(&box);
++	return MUNIT_OK;
++}
++
++/* ---------- Network simulation: 60 fps, frames of 40 source + 8 FEC units ---------- */
++
++#define SIM_SOURCE 40
++#define SIM_FEC 8
++#define SIM_TOTAL (SIM_SOURCE + SIM_FEC)
++#define SIM_FRAME_US 16667
++#define SIM_BURST_US 4000
++#define SIM_BASE_DELAY_US 1000
++
++typedef struct sim_packet_t
++{
++	FakeEntry entry;
++	int64_t arrival;
++	bool lost;
++	int64_t dispatched_at; // -1 = never
++} SimPacket;
++
++typedef struct sim_t
++{
++	SimPacket *packets;
++	size_t count;
++	size_t *order; // by arrival
++	int64_t now;
++	// what the frame processor reports to packet_stats: one generation per frame, when the next one starts
++	ChiakiPacketStats *stats;
++	bool have_frame;
++	uint64_t frame;
++	uint32_t frame_units;
++	uint64_t queue_drops; // good packets the full reorder queue threw away
++} Sim;
++
++typedef struct sim_result_t
++{
++	uint64_t frames;
++	uint64_t frames_rebuildable; // at least SIM_SOURCE units physically arrived
++	uint64_t frames_delivered; // at least SIM_SOURCE units dispatched
++	uint64_t lost_packets;
++	int64_t extra_us_total; // sum over frames of (ready when dispatched - ready when arrived)
++	uint64_t timeout_skips;
++	uint64_t fec_skips;
++	uint64_t too_late_fec; // reordered packets that arrived after FEC already rebuilt their frame
++	uint64_t packets_sent;
++	uint64_t reported_lost; // loss the congestion control would send to the console, over the whole run
++	uint64_t queue_drops;
++} SimResult;
++
++static uint64_t rng_next(uint64_t *s)
++{
++	uint64_t x = *s;
++	x ^= x << 13;
++	x ^= x >> 7;
++	x ^= x << 17;
++	*s = x;
++	return x;
++}
++
++static void sim_dispatch(uint64_t seq_num, void *entry, void *user)
++{
++	(void)seq_num;
++	Sim *sim = user;
++	SimPacket *p = (SimPacket *)entry; // entry is the first member
++	p->dispatched_at = sim->now;
++	uint64_t frame = p->entry.id / SIM_TOTAL;
++	if(sim->have_frame && frame != sim->frame)
++	{
++		chiaki_packet_stats_push_generation(sim->stats, sim->frame_units, SIM_TOTAL - sim->frame_units);
++		sim->frame_units = 0;
++	}
++	sim->have_frame = true;
++	sim->frame = frame;
++	sim->frame_units++;
++}
++
++static void sim_drop(uint64_t seq_num, void *elem_user, void *cb_user)
++{
++	(void)seq_num;
++	SimPacket *p = (SimPacket *)elem_user;
++	if(p->dispatched_at < 0)
++		((Sim *)cb_user)->queue_drops++;
++}
++
++// Print the measured numbers when CHIAKI_TEST_REPORT is set (munit hides info logs of passing tests).
++#define REPORT(...) do { if(getenv("CHIAKI_TEST_REPORT")) fprintf(stderr, __VA_ARGS__); } while(0)
++
++static int cmp_i64(const void *a, const void *b)
++{
++	int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
++	return (x > y) - (x < y);
++}
++
++static Sim *sim_sort_ctx;
++
++static int cmp_arrival(const void *a, const void *b)
++{
++	const SimPacket *x = &sim_sort_ctx->packets[*(const size_t *)a];
++	const SimPacket *y = &sim_sort_ctx->packets[*(const size_t *)b];
++	if(x->arrival != y->arrival)
++		return (x->arrival > y->arrival) - (x->arrival < y->arrival);
++	return (x->entry.id > y->entry.id) - (x->entry.id < y->entry.id);
++}
++
++static void simulate(bool adaptive, uint32_t loss_permille, uint32_t reorder_permille, int64_t reorder_max_us,
++		uint64_t frames, uint64_t seed, SimResult *res)
++{
++	memset(res, 0, sizeof(*res));
++	Sim sim = { 0 };
++	sim.count = (size_t)(frames * SIM_TOTAL);
++	sim.packets = calloc(sim.count, sizeof(SimPacket));
++	sim.order = calloc(sim.count, sizeof(size_t));
++	munit_assert_not_null(sim.packets);
++	munit_assert_not_null(sim.order);
++
++	uint64_t rng = seed;
++	size_t n = 0;
++	for(uint64_t f=0; f<frames; f++)
++	{
++		for(uint16_t u=0; u<SIM_TOTAL; u++)
++		{
++			SimPacket *p = &sim.packets[f * SIM_TOTAL + u];
++			p->entry.id = f * SIM_TOTAL + u;
++			p->entry.unit.packet_index = (ChiakiSeqNum16)p->entry.id;
++			p->entry.unit.frame_index = (ChiakiSeqNum16)(f + 1);
++			p->entry.unit.unit_index = u;
++			p->entry.unit.units_total = SIM_TOTAL;
++			p->entry.unit.units_fec = SIM_FEC;
++			p->arrival = (int64_t)f * SIM_FRAME_US + (int64_t)u * SIM_BURST_US / SIM_TOTAL + SIM_BASE_DELAY_US;
++			if(rng_next(&rng) % 1000 < reorder_permille)
++				p->arrival += (int64_t)(rng_next(&rng) % (uint64_t)(reorder_max_us + 1));
++			p->lost = rng_next(&rng) % 1000 < loss_permille;
++			p->dispatched_at = -1;
++			if(p->lost)
++				res->lost_packets++;
++			else
++				sim.order[n++] = (size_t)p->entry.id;
++		}
++	}
++	sim_sort_ctx = &sim;
++	qsort(sim.order, n, sizeof(size_t), cmp_arrival);
++
++	ChiakiReorderQueue queue;
++	munit_assert_int(chiaki_reorder_queue_init_16(&queue, 6, 0), ==, CHIAKI_ERR_SUCCESS);
++	chiaki_reorder_queue_set_drop_strategy(&queue, CHIAKI_REORDER_QUEUE_DROP_STRATEGY_BEGIN);
++	chiaki_reorder_queue_set_drop_cb(&queue, sim_drop, &sim);
++	ChiakiPacketStats packet_stats;
++	munit_assert_int(chiaki_packet_stats_init(&packet_stats), ==, CHIAKI_ERR_SUCCESS);
++	ChiakiAvReorderStatsBox box;
++	munit_assert_int(chiaki_av_reorder_stats_box_init(&box), ==, CHIAKI_ERR_SUCCESS);
++	box.packet_stats = &packet_stats;
++	sim.stats = &packet_stats;
++	ChiakiAvReorder reorder;
++	chiaki_av_reorder_init(&reorder, adaptive, &box);
++
++	for(size_t i=0; i<n; i++)
++	{
++		SimPacket *p = &sim.packets[sim.order[i]];
++		// the takion thread wakes up for pending timeouts before the next packet
++		for(;;)
++		{
++			int64_t timeout = chiaki_av_reorder_next_timeout_us(&reorder, sim.now);
++			if(timeout < 0 || sim.now + timeout + 1 > p->arrival)
++				break;
++			sim.now += timeout + 1;
++			chiaki_av_reorder_flush(&reorder, &queue, sim.now, unit_of, sim_dispatch, &sim);
++		}
++		sim.now = p->arrival;
++		chiaki_av_reorder_on_arrival(&reorder, &queue, p->entry.unit.packet_index, sim.now);
++		chiaki_reorder_queue_push(&queue, p->entry.unit.packet_index, &p->entry);
++		chiaki_av_reorder_flush(&reorder, &queue, sim.now, unit_of, sim_dispatch, &sim);
++	}
++	sim.now += 1000000;
++	chiaki_av_reorder_flush(&reorder, &queue, sim.now, unit_of, sim_dispatch, &sim);
++
++	res->frames = frames;
++	res->timeout_skips = reorder.stats.timeout_skips;
++	res->fec_skips = reorder.stats.fec_skips;
++	res->too_late_fec = reorder.stats.too_late_fec;
++	res->packets_sent = sim.count;
++	res->queue_drops = sim.queue_drops;
++	if(sim.have_frame)
++		chiaki_packet_stats_push_generation(&packet_stats, sim.frame_units, SIM_TOTAL - sim.frame_units);
++	uint64_t reported_received = 0;
++	chiaki_packet_stats_get(&packet_stats, false, &reported_received, &res->reported_lost);
++	int64_t arrived[SIM_TOTAL], dispatched[SIM_TOTAL];
++	for(uint64_t f=0; f<frames; f++)
++	{
++		size_t na = 0, nd = 0;
++		for(uint16_t u=0; u<SIM_TOTAL; u++)
++		{
++			SimPacket *p = &sim.packets[f * SIM_TOTAL + u];
++			if(!p->lost)
++				arrived[na++] = p->arrival;
++			if(p->dispatched_at >= 0)
++				dispatched[nd++] = p->dispatched_at;
++		}
++		if(na < SIM_SOURCE)
++			continue;
++		res->frames_rebuildable++;
++		if(nd < SIM_SOURCE)
++			continue;
++		res->frames_delivered++;
++		qsort(arrived, na, sizeof(int64_t), cmp_i64);
++		qsort(dispatched, nd, sizeof(int64_t), cmp_i64);
++		int64_t extra = dispatched[SIM_SOURCE - 1] - arrived[SIM_SOURCE - 1];
++		res->extra_us_total += extra > 0 ? extra : 0;
++	}
++
++	chiaki_reorder_queue_fini(&queue);
++	chiaki_av_reorder_stats_box_fini(&box);
++	chiaki_packet_stats_fini(&packet_stats);
++	free(sim.order);
++	free(sim.packets);
++}
++
++// SC-001 and SC-002: 1% random loss, no reordering.
++static MunitResult test_sim_loss(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	SimResult legacy, adaptive;
++	simulate(false, 10, 0, 0, 3600, 0x9e3779b97f4a7c15ull, &legacy);
++	simulate(true, 10, 0, 0, 3600, 0x9e3779b97f4a7c15ull, &adaptive);
++	munit_assert_uint64(legacy.lost_packets, ==, adaptive.lost_packets);
++	munit_assert_uint64(legacy.lost_packets, >, 1000);
++	double legacy_per_loss = (double)legacy.extra_us_total / (double)legacy.lost_packets;
++	double adaptive_per_loss = (double)adaptive.extra_us_total / (double)adaptive.lost_packets;
++	REPORT("loss 1%%: lost=%llu legacy extra/loss=%.0f us adaptive extra/loss=%.0f us "
++			"delivered legacy=%llu adaptive=%llu rebuildable=%llu fec_skips=%llu timeout_skips=%llu\n",
++			(unsigned long long)legacy.lost_packets, legacy_per_loss, adaptive_per_loss,
++			(unsigned long long)legacy.frames_delivered, (unsigned long long)adaptive.frames_delivered,
++			(unsigned long long)adaptive.frames_rebuildable,
++			(unsigned long long)adaptive.fec_skips, (unsigned long long)adaptive.timeout_skips);
++	munit_assert_double(legacy_per_loss, >, 8000.0);
++	munit_assert_double(adaptive_per_loss, <, 1000.0);
++	munit_assert_uint64(adaptive.frames_delivered, >=, legacy.frames_delivered);
++	munit_assert_uint64(adaptive.frames_delivered, ==, adaptive.frames_rebuildable);
++	// The console hears exactly the true loss. The old 16 ms wait could overflow the 64 slot queue and
++	// throw good packets away, which it then reported as lost too.
++	REPORT("loss 1%%: reported to the console legacy=%llu adaptive=%llu (true loss %llu) queue drops legacy=%llu adaptive=%llu\n",
++			(unsigned long long)legacy.reported_lost, (unsigned long long)adaptive.reported_lost,
++			(unsigned long long)adaptive.lost_packets,
++			(unsigned long long)legacy.queue_drops, (unsigned long long)adaptive.queue_drops);
++	munit_assert_uint64(adaptive.reported_lost, ==, adaptive.lost_packets);
++	munit_assert_uint64(adaptive.reported_lost, <=, legacy.reported_lost);
++	munit_assert_uint64(adaptive.queue_drops, ==, 0);
++	return MUNIT_OK;
++}
++
++// SC-003: reordering up to 3 ms, no loss: every frame whole, no timeout skip.
++static MunitResult test_sim_reorder(const MunitParameter params[], void *user)
++{
++	(void)params; (void)user;
++	SimResult res, legacy;
++	simulate(true, 0, 50, 3000, 3600, 0x2545f4914f6cdd1dull, &res);
++	simulate(false, 0, 50, 3000, 3600, 0x2545f4914f6cdd1dull, &legacy);
++	REPORT("reorder 5%% up to 3 ms: delivered=%llu of %llu fec_skips=%llu timeout_skips=%llu "
++			"extra/frame=%.0f us late-after-fec=%llu (%.2f%% of packets, credited back as received)\n",
++			(unsigned long long)res.frames_delivered, (unsigned long long)res.frames,
++			(unsigned long long)res.fec_skips, (unsigned long long)res.timeout_skips,
++			(double)res.extra_us_total / (double)res.frames,
++			(unsigned long long)res.too_late_fec, 100.0 * (double)res.too_late_fec / (double)res.packets_sent);
++	munit_assert_uint64(res.frames_delivered, ==, res.frames);
++	munit_assert_uint64(res.timeout_skips, ==, 0);
++	// SC-008: reordering within 16 ms, the console hears the same loss as with the old policy
++	REPORT("reorder 5%% up to 3 ms: reported to the console legacy=%llu adaptive=%llu\n",
++			(unsigned long long)legacy.reported_lost, (unsigned long long)res.reported_lost);
++	munit_assert_uint64(res.reported_lost, ==, legacy.reported_lost);
++	return MUNIT_OK;
++}
++
++MunitTest tests_av_reorder[] = {
++	{ "/fec_skip_now", test_fec_skip_now, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/legacy_waits_16ms", test_legacy_waits_16ms, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/fec_unit_of_complete_frame", test_fec_unit_of_complete_frame, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/gap_after_frame_end_is_next_frame", test_gap_after_frame_end_is_next_frame, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/unrecoverable_waits_window", test_unrecoverable_waits_window, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/late_fill", test_late_fill, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/window_decays", test_window_decays, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/too_late_raises_window", test_too_late_raises_window, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/legacy_window_fixed", test_legacy_window_fixed, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/wraparound", test_wraparound, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/late_fec_packet_not_reported_lost", test_late_fec_packet_not_reported_lost, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/packet_stats_late_credit", test_packet_stats_late_credit, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/stats_box", test_stats_box, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/sim_loss", test_sim_loss, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ "/sim_reorder", test_sim_reorder, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
++	{ NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
++};
+diff --git a/test/main.c b/test/main.c
+index 7612955..031078f 100644
+--- a/test/main.c
++++ b/test/main.c
+@@ -14,6 +14,7 @@ extern MunitTest tests_takion[];
+ extern MunitTest tests_fec[];
+ extern MunitTest tests_regist[];
+ extern MunitTest tests_bitstream[];
++extern MunitTest tests_av_reorder[];
+ #if CHIAKI_LIB_ENABLE_FFMPEG_DECODER
+ extern MunitTest tests_ffmpegdecoder[];
+ #endif
+@@ -96,6 +97,13 @@ static MunitSuite suites[] = {
+ 		1,
+ 		MUNIT_SUITE_OPTION_NONE
+ 	},
++	{
++		"/avreorder",
++		tests_av_reorder,
++		NULL,
++		1,
++		MUNIT_SUITE_OPTION_NONE
++	},
+ #if CHIAKI_LIB_ENABLE_FFMPEG_DECODER
+ 	{
+ 		"/ffmpegdecoder",

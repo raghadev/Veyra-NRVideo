@@ -38,13 +38,16 @@ struct NativeSnapshot {
     bool started=false,connected=false;
     std::uint64_t warnings=0,errors=0,videoCallbacks=0,audioCallbacks=0;
     int lastQuitReason=0,lastApiError=0;
+    uint32_t applicationReason=0;
+    enum class SessionAdvice { None, Account, Registration, InUse, Version, Rejected };
+    SessionAdvice sessionAdvice=SessionAdvice::None;
     uint64_t callbackRejected=0,packetReceived=0,packetLost=0;
     uint64_t transportErrors=0,assemblyErrors=0;
     bool automaticRetryAllowed=true;
     bool startupRetryAllowed=false; // Only transient RP_IN_USE, never an auth rejection.
     int64_t serverTargetBitrate=-1; // Raw upstream field; diagnostic opt-in only.
     uint64_t qualityReports=0;
-    // Video reorder statistics of Chiaki patch 0006 (how long the picture waited for missing packets).
+    // Video reorder statistics of the Chiaki av-reorder patch (how long the picture waited for missing packets).
     bool reorderValid=false,reorderAdaptive=false;
     uint64_t reorderGaps=0,reorderFecSkips=0,reorderTimeoutSkips=0,reorderLateFills=0;
     uint64_t reorderTooLateTimeout=0,reorderTooLateFec=0,reorderWaitUsTotal=0;

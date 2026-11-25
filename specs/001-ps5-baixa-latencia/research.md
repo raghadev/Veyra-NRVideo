@@ -1,5 +1,10 @@
 # Research: Baixa latência no PS5 Remote Play
 
+> **Numeração dos patches (25/11/2026)**: este documento nasceu antes da junção com o Veyra 2.2.1. Hoje a fila é:
+> 0001 a 0005 do Veyra (o 0005, novo no 2.2.1, é o buffer de recepção de 4 MiB), depois os nossos
+> `0006-chiaki-reorder-queue-16bit-wrap`, `0007-chiaki-av-reorder` e `0008-chiaki-packet-stats-16bit-wrap`
+> (antes 0005, 0006 e 0007). O nosso antigo 0008 (buffer de recepção) saiu: o do Veyra faz o mesmo.
+
 Fontes lidas nesta sessão (2026-11-23). Commit fixado do chiaki-ng: `0e16950165f06e5c3291537c2eeba6e852be7120`
 com os patches 0001 a 0004 do Veyra aplicados.
 
@@ -118,15 +123,16 @@ com os patches 0001 a 0004 do Veyra aplicados.
 
 **Achados que viraram código**
 - `SO_RCVBUF` do takion era a janela de dados anunciada, 100 kB (`TAKION_A_RWND 0x19000`), menor que um
-  quadro grande; upstream discute o mesmo em PR 873 e 817 (não fundidos). Patch 0008.
+  quadro grande; upstream discute o mesmo em PR 873 e 817 (não fundidos). Virou o nosso patch de buffer,
+  retirado em 25/11/2026 porque o Veyra 2.2.1 trouxe o mesmo conserto como patch 0005 dele.
 - `packetstats.c`: `seq_max - seq_min` de dois valores de 16 bits promovidos a int; o relatório da virada
   do índice de áudio (a cada ~655 s) dizia ~2^64 perdidos. O console reduz a taxa de vídeo quando ouve
-  perda (PR 157, PR 871 fechado sem fundir). Gêmeo do defeito do patch 0005, que a minha busca de gêmeos
-  anterior não pegou porque só procurava somas. Patch 0007.
+  perda (PR 157, PR 871 fechado sem fundir). Gêmeo do defeito do patch da fila (hoje 0006), que a minha
+  busca de gêmeos anterior não pegou porque só procurava somas. Patch de packet stats (hoje 0008).
 - Mesma função, achado medido pelo crítico da segunda leva: a regra original
   `seq_received > seq_diff ? seq_diff : seq_diff - seq_received` dava o intervalo inteiro como perdido
   quando chegava um quadro atrasado (10 recebidos + 1 atrasado = 10 "perdidos"). Passou a ser zero perda
-  quando chegam mais quadros do que o intervalo comporta. Também no patch 0007, com teste próprio.
+  quando chegam mais quadros do que o intervalo comporta. Também no patch de packet stats, com teste próprio.
 - Laço dono da sessão dormia `sleep_for(1ms)` sem quadro pronto. Com o relógio do Windows afinado dura 1 a
   2 ms; sem afinar, até 15,6 ms (o próprio autor anotou isso no laço de só-controle e usou timer de alta
   resolução lá). O Qt 6.8 afina o relógio enquanto houver QTimer de até 20 ms ativo

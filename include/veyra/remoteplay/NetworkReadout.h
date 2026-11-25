@@ -5,7 +5,7 @@
 
 namespace veyra::remoteplay {
 // One reading of the PS5 transport counters: Chiaki's packet window and its video reorder
-// statistics (patch 0006). The packet window may be reset by Chiaki's congestion control.
+// statistics (the av-reorder patch). The packet window may be reset by Chiaki's congestion control.
 struct NetworkCounters {
     bool valid=false, adaptive=false;
     uint64_t packetReceived=0, packetLost=0;
