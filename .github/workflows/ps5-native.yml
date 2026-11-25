@@ -99,9 +99,13 @@ jobs:
           python -m pip install --disable-pip-version-check protobuf grpcio-tools
           python -m pip list --disable-pip-version-check | Select-String -Pattern '^(protobuf|grpcio)' | Write-Host
 
+      # CL: the probe compiles with /W4 /WX, and upstream's ChiakiBackend.cpp uses sscanf and
+      # getenv, which MSVC reports as C4996 (CRT deprecation). The product build does not treat
+      # that as an error either; the fork's own files use none of those functions.
       - name: Patch, verify, build and test the Remote Play library (build-native.ps1)
         env:
           OPENSSL_ROOT_DIR: ${{ env.RP_PREFIX }}
+          CL: /D_CRT_SECURE_NO_WARNINGS
         run: |
           $env:PATH = "C:\v\installed\x64-windows-static\tools\protobuf;$env:PATH"
           scripts/remoteplay/build-native.ps1 -ChiakiCheckout C:\chiaki -StageDirectory C:\chiaki-stage `
@@ -119,7 +123,30 @@ jobs:
           }
 
       - name: Portable and loopback Remote Play tests with MSVC
+        env:
+          CL: /D_CRT_SECURE_NO_WARNINGS
         run: |
           cmake --build C:\rp --config Release --parallel --target veyra_remoteplay_core_tests veyra_remoteplay_feedback_wire_tests veyra_remoteplay_profile_tests
           ctest --test-dir C:\rp -C Release -L offline-core --output-on-failure --timeout 30
           ctest --test-dir C:\rp -C Release -R "remoteplay-feedback-wire|rp.dpapi_profile" --output-on-failure --timeout 30
+
+      # The munit suite of chiaki-ng, with the fork's 20 tests (reorder queue wrap, av-reorder,
+      # packet stats), compiled by MSVC. Upstream chiaki-ng does not build its tests with MSVC,
+      # so a failure here is reported without failing the gate.
+      - name: chiaki-ng unit tests with MSVC (informative)
+        continue-on-error: true
+        env:
+          CL: /D_CRT_SECURE_NO_WARNINGS /DMINIUPNP_STATICLIB
+        run: |
+          $env:PATH = "C:\v\installed\x64-windows-static\tools\protobuf;$env:PATH"
+          cmake -S C:\chiaki-stage -B C:\chiaki-tests -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DCHIAKI_ENABLE_TESTS=ON -DCHIAKI_ENABLE_GUI=OFF -DCHIAKI_ENABLE_CLI=OFF `
+            -DCHIAKI_ENABLE_FFMPEG_DECODER=OFF -DCHIAKI_ENABLE_PI_DECODER=OFF -DCHIAKI_ENABLE_SETSU=OFF `
+            -DCHIAKI_ENABLE_STEAMDECK_NATIVE=OFF -DCHIAKI_ENABLE_STEAM_SHORTCUT=OFF -DCHIAKI_ENABLE_SPEEX=OFF `
+            -DCHIAKI_ENABLE_RUDP=OFF -DCHIAKI_USE_SYSTEM_NANOPB=OFF -DCHIAKI_USE_SYSTEM_JERASURE=OFF `
+            -DCHIAKI_USE_SYSTEM_CURL=OFF "-DCMAKE_PREFIX_PATH=$env:RP_PREFIX" "-DOPENSSL_ROOT_DIR=$env:RP_PREFIX" `
+            "-DPROTOC=$env:RP_PREFIX/tools/protobuf/protoc.exe" `
+            "-DPKG_CONFIG_EXECUTABLE=$env:RP_PREFIX/tools/pkgconf/pkgconf.exe"
+          cmake --build C:\chiaki-tests --parallel --target chiaki-unit -- -k 0
+          C:\chiaki-tests\test\chiaki-unit.exe
