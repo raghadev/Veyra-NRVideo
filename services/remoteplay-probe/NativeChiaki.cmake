@@ -1,4 +1,8 @@
-add_executable(veyra_remoteplay_native_probe "${CMAKE_CURRENT_LIST_DIR}/native_main.cpp")
+# ChiakiBackend.cpp logs touchpad events since 2.2.1. The product takes the log from veyra_base;
+# the probe links the two sources it needs.
+add_executable(veyra_remoteplay_native_probe "${CMAKE_CURRENT_LIST_DIR}/native_main.cpp"
+    "${VEYRA_ROOT}/src/base/Log.cpp"
+    "${VEYRA_ROOT}/src/base/PrivateFrameTrace.cpp")
 target_compile_features(veyra_remoteplay_native_probe PRIVATE cxx_std_20)
 target_compile_definitions(veyra_remoteplay_native_probe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(veyra_remoteplay_native_probe PRIVATE veyra_remoteplay_chiaki chiaki-lib)
