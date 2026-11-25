@@ -1,5 +1,15 @@
 # 当前工作日志
 
+## 2026-11-25 GitHub 上构建带 PS5 串流的 Veyra（fork raghadev/Veyra-NRVideo）
+
+新增两个只属于本分支的工作流：`ps5-native.yml`（约 10 分钟：经 `build-native.ps1` 打补丁、核验、用 MSVC 构建并运行 Windows 测试，另跑可移植测试、回环测试和 chiaki munit 套件）和 `windows-build-ps5.yml`（上游 `windows-build.yml` 的副本，加 PS5 串流依赖、已核验的 chiaki stage 和 `VEYRA_ENABLE_REMOTEPLAY=ON`，产出不含专有 GPU 运行库的便携包）。上游的 `windows-build.yml` 没有改动。
+
+为让构建通过修了上游的三处问题，都不在本分支改动的代码里：`VfgBackend::capture` 的无 CUDA 桩分支仍引用已改名的参数 `comparePrevious`（C2065，上游该工作流在 2.2.1 一直失败）；探针以 /W4 /WX 编译，而 `ChiakiBackend.cpp` 使用 `sscanf`、`getenv`（C4996），在工作流里用 `CL=/D_CRT_SECURE_NO_WARNINGS` 处理；`ChiakiBackend.cpp` 自 2.2.1 起调用 `log::info`，原生探针没有链接 `Log.cpp` 和 `PrivateFrameTrace.cpp`（LNK2019），已在 `NativeChiaki.cmake` 补上。
+
+GitHub Windows runner（MSVC 14.44，Qt 6.8.3）上的实测结果，测试分支 `ci-ps5`：`CHIAKI_STAGE_EXACT_PATCHES_VERIFIED`；原生测试 2/2；八个补丁在完整 stage 上都被识别为已应用；可移植测试 95/95（/W4 /WX）；回环 feedback 测试 1/1；chiaki munit 122/122（含本分支 20 项）；产品 `veyra_qml_ui.exe` 链接完成（602/602），本分支文件没有编译警告，Defender 扫描通过。产物 `veyra-windows-ps5-ci-no-gpu-runtimes`（run 45691214347）。`scripts/remoteplay/fork/montar-teste.ps1` 把该产物的播放器、`qml\Veyra` 和着色器换进官方便携包的副本；该脚本还没有在 Windows 上运行过。
+
+未验证：程序没有在带 GPU 的 Windows 上启动过，没有 PS5 实机测试。该产物不含依赖 CUDA 头文件的功能（原生 VFG、VFX 超分）和 RIFE。
+
 ## 2026-11-25 合并 Veyra 2.2.1（fork raghadev/Veyra-NRVideo，分支 baixa-latencia-ps5）
 
 上游 2.2.1（`bc59d457`）自带 `0005-chiaki-udp-receive-buffer.patch`（Takion 套接字接收缓冲 4 MiB），与本分支原 `0008-chiaki-udp-receive-buffer.patch` 修的是同一处。合并时采用上游补丁，删除本分支的缓冲补丁及其 `chiaki_takion_socket_set_rcvbuf`、`test/takionsocket.c`（上游版本固定请求 4 MiB，没有系统拒绝时减半的回退）。本分支其余三个补丁在上游 0005 之后重新生成并改号：`0006-chiaki-reorder-queue-16bit-wrap.patch`（原 0005）、`0007-chiaki-av-reorder.patch`（原 0006）、`0008-chiaki-packet-stats-16bit-wrap.patch`（原 0007），补丁增删的代码行与原补丁相同；行号变化，另外测试登记行的位置有调整（见下一段）。下面 11-23 条目里的补丁编号是当时的编号。

@@ -42,11 +42,24 @@ ao primeiro comando (no MSVC do produto não é preciso).
 
 ## 3. No notebook Windows (o teste que importa)
 
-1. Compilar o Veyra pelo fluxo normal dele (`scripts/remoteplay/build-native.ps1`); o verificador de stage
-   precisa imprimir `CHIAKI_STAGE_EXACT_PATCHES_VERIFIED`.
-2. Abrir uma sessão PS5, apertar Ctrl+Alt+Shift+S e jogar 5 minutos no Wi-Fi.
-3. Anotar no painel: perdas resolvidas na hora, esperas por tempo esgotado, espera por segundo, espera
-   vigente; e no registro, as linhas `remoteplay-wifi`, `remoteplay-reorder` e `remoteplay-progress`
-   (esta já traz a espera na fila e o tempo de decodificação medidos pelo Veyra).
-4. Repetir com o build compilado com `CHIAKI_AV_REORDER_ADAPTIVE_DEFAULT=0` (comportamento antigo) para
-   comparar a "espera por segundo" nas mesmas condições.
+O GitHub compila o programa com a parte do PS5 a cada mudança (receita `.github/workflows/windows-build-ps5.yml`).
+O zip sai sem os componentes proprietários da placa de vídeo, por isso é montado sobre uma cópia do pacote oficial.
+
+1. Baixar o zip do fork: página Actions do repositório `raghadev/Veyra-NRVideo`, execução mais recente de
+   "Windows build with PS5 Remote Play (fork)", item `veyra-windows-ps5-ci-no-gpu-runtimes` em Artifacts.
+2. Baixar o pacote oficial `Veyra-<versão>-NVIDIA-win64-portable.zip` somente de
+   `https://github.com/Likely7/Veyra-NRVideo/releases`.
+3. Montar a pasta de teste (não toca na instalação oficial em uso):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\remoteplay\fork\montar-teste.ps1 -PacoteOficial <zip oficial> -ZipDoFork <zip do fork> -Destino C:\Veyra-PS5-teste
+   ```
+
+4. Abrir o `Veyra.exe` da pasta de teste, parear o PS5 (pede o ID da conta PSN e o código de 8 números da tela
+   "Vincular dispositivo" do console), apertar Ctrl+Alt+Shift+S e jogar 5 minutos.
+5. Anotar no painel: perdas resolvidas na hora, esperas por tempo esgotado, espera por segundo, espera vigente; e no
+   registro, as linhas `remoteplay-wifi`, `remoteplay-reorder` e `remoteplay-progress`.
+6. Para comparar, repetir os 5 minutos com o pacote oficial sem troca, na mesma rede e no mesmo jogo.
+
+O zip do GitHub não traz o que depende de cabeçalhos CUDA (geração de quadros nativa, aumento de resolução RTX) nem o
+RIFE. Para medir atraso isso não atrapalha.

@@ -110,6 +110,15 @@
 - [x] T054 Defeito nosso achado ao preparar a crítica (existia desde 23/11): rodar `build-native.ps1` pela segunda vez no mesmo stage parava, porque ele confere patch por patch com `git apply --reverse --check` e os nossos registravam os testes colados nos do 0003 e um no outro. Agora o 0007 registra no fim das listas e o 0008 depois de `rpcrypt`; os 8 passam na conferência (`scripts/remoteplay/fork/check-reapply.sh`, que fica vermelho com a fila anterior). Linhas de código dos patches iguais, só mudou a posição do registro
 - [x] T053 Crítico de contexto limpo sobre a junção: aprovado, sem P0 nem P1. Dois P3 de texto corrigidos por substituição (nome de um arquivo na lista de conflitos do WORKLOG; números antigos no corpo do plan.md)
 
+## Phase 9: Compilação pelo GitHub (25/11/2026)
+
+- [x] T055 Receita rápida `.github/workflows/ps5-native.yml`: no Windows do GitHub, aplica e verifica os 8 patches, compila com o compilador da Microsoft pelo `build-native.ps1` e roda os testes. Medido: verificador exato, 2 de 2 testes nativos, 8 de 8 patches reconhecidos como aplicados, 95 de 95 testes portáveis (/W4 /WX), 1 de 1 teste de laço, chiaki 122 de 122
+- [x] T056 Receita completa `.github/workflows/windows-build-ps5.yml`: cópia da receita do upstream mais a parte do PS5; o programa ligou (602 de 602 etapas) e saiu o zip `veyra-windows-ps5-ci-no-gpu-runtimes`
+- [x] T057 Três defeitos do Veyra original corrigidos para a compilação passar (nenhum em arquivo nosso): parâmetro inexistente no trecho sem CUDA de `VfgBackend.cpp`; aviso C4996 tratado como erro no teste nativo; teste nativo sem ligar `Log.cpp` e `PrivateFrameTrace.cpp`
+- [x] T058 Zip conferido por dentro (sem executar): código de integridade igual ao do GitHub, painel do PS5 em `qml/Veyra/StreamHud.qml`, marcas dos nossos consertos e do ajuste de Wi-Fi dentro do `veyra_qml_ui.exe`
+- [ ] T059 `scripts/remoteplay/fork/montar-teste.ps1` (monta a pasta de teste no Acer): escrito, ainda não executado em Windows
+- [ ] T060 Abrir no Acer, parear o PS5 e medir (segue o quickstart, seção 3)
+
 ## Dependencies & Execution Order
 
 - Phase 2 depende de Phase 1; US1 depende de Phase 2.
