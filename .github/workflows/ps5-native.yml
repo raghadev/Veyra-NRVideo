@@ -1,0 +1,152 @@
+name: PS5 native gate (fork)
+
+# Fork raghadev/Veyra-NRVideo only. Fast check of the PS5 Remote Play library on Windows:
+# the pinned chiaki-ng gets the eight patches of scripts/remoteplay/patches, is verified byte
+# for byte, built with MSVC and exercised by the Windows-only tests, all through the project's
+# own scripts/remoteplay/build-native.ps1. Then the portable Remote Play tests are compiled with
+# MSVC (/W4 /WX). No PS5, decoder or GPU is involved, and no application is produced: the full
+# program comes from windows-build-ps5.yml.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    paths:
+      - '.github/workflows/ps5-native.yml'
+      - 'scripts/remoteplay/**'
+      - 'cmake/VeyraRemotePlay.cmake'
+      - 'services/remoteplay-probe/**'
+      - 'src/remoteplay/**'
+      - 'include/veyra/remoteplay/**'
+      - 'tests/remoteplay/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ps5-native-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VCPKG_COMMIT: 30ef65cad98f08e7197c9a1656fbd871bcb72f2d    # = vcpkg.json builtin-baseline
+  CHIAKI_COMMIT: 0e16950165f06e5c3291537c2eeba6e852be7120   # = scripts/remoteplay/dependency-lock.json chiaki_commit
+  RP_PREFIX: C:/v/installed/x64-windows-static
+
+jobs:
+  native:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh -NoProfile -Command "$ErrorActionPreference = 'Stop'; $PSNativeCommandUseErrorActionPreference = $true; . '{0}'"
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
+      - name: Fetch vcpkg at the builtin-baseline
+        run: |
+          git init -q C:\v
+          git -C C:\v remote add origin https://github.com/microsoft/vcpkg.git
+          git -C C:\v fetch -q --depth 1 origin $env:VCPKG_COMMIT
+          git -C C:\v -c advice.detachedHead=false checkout -q FETCH_HEAD
+          C:\v\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Restore the Remote Play dependency cache
+        id: rp-cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: C:\vcache-rp
+          key: vcpkg-rp-${{ env.VCPKG_COMMIT }}-v1
+
+      # Static libraries with the static CRT, as build-native.ps1 and the product build use.
+      # Host tools (protoc, pkgconf) go to the same static tree, so no extra DLL appears.
+      - name: Build the Remote Play dependencies
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,C:\vcache-rp,readwrite
+          VCPKG_DISABLE_METRICS: '1'
+        run: |
+          New-Item -ItemType Directory -Force C:\vcache-rp | Out-Null
+          C:\v\vcpkg.exe install --classic --clean-after-build `
+            --triplet x64-windows-static --host-triplet x64-windows-static `
+            opus openssl json-c libevent miniupnpc sdl3 pkgconf protobuf
+          C:\v\vcpkg.exe list --classic | Write-Host
+
+      - name: Save the Remote Play dependency cache
+        if: steps.rp-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: C:\vcache-rp
+          key: vcpkg-rp-${{ env.VCPKG_COMMIT }}-v1
+
+      - name: Check out the pinned chiaki-ng with its submodules
+        run: |
+          git config --global core.autocrlf false
+          git init -q C:\chiaki
+          git -C C:\chiaki remote add origin https://github.com/chiaki-ng/chiaki-ng.git
+          git -C C:\chiaki fetch -q --depth 1 origin $env:CHIAKI_COMMIT
+          git -C C:\chiaki -c advice.detachedHead=false checkout -q FETCH_HEAD
+          git -C C:\chiaki submodule update --init --recursive --depth 1
+          if ((git -C C:\chiaki rev-parse HEAD).Trim() -ne $env:CHIAKI_COMMIT) { throw 'chiaki-ng pin mismatch' }
+
+      # The nanopb generator of chiaki-ng imports the Python protobuf package.
+      - name: Python packages for the nanopb generator
+        run: |
+          python -m pip install --disable-pip-version-check protobuf grpcio-tools
+          python -m pip list --disable-pip-version-check | Select-String -Pattern '^(protobuf|grpcio)' | Write-Host
+
+      # CL: the probe compiles with /W4 /WX, and upstream's ChiakiBackend.cpp uses sscanf and
+      # getenv, which MSVC reports as C4996 (CRT deprecation). The product build does not treat
+      # that as an error either; the fork's own files use none of those functions.
+      - name: Patch, verify, build and test the Remote Play library (build-native.ps1)
+        env:
+          OPENSSL_ROOT_DIR: ${{ env.RP_PREFIX }}
+          CL: /D_CRT_SECURE_NO_WARNINGS
+        run: |
+          $env:PATH = "C:\v\installed\x64-windows-static\tools\protobuf;$env:PATH"
+          scripts/remoteplay/build-native.ps1 -ChiakiCheckout C:\chiaki -StageDirectory C:\chiaki-stage `
+            -BuildDirectory C:\rp -PrefixPath $env:RP_PREFIX `
+            -ProtocPath C:\v\installed\x64-windows-static\tools\protobuf\protoc.exe `
+            -PkgConfigPath C:\v\installed\x64-windows-static\tools\pkgconf\pkgconf.exe
+
+      # build-native.ps1 decides "already applied" patch by patch; a second run on the same stage
+      # must pass too (scripts/remoteplay/fork/check-reapply.sh checks the same thing on other systems).
+      - name: Every patch is recognised as applied on the complete stage
+        run: |
+          Get-ChildItem scripts/remoteplay/patches/*.patch | Sort-Object Name | ForEach-Object {
+            git -C C:\chiaki-stage apply --reverse --check $_.FullName
+            Write-Host "ok   $($_.Name)"
+          }
+
+      - name: Portable and loopback Remote Play tests with MSVC
+        env:
+          CL: /D_CRT_SECURE_NO_WARNINGS
+        run: |
+          cmake --build C:\rp --config Release --parallel --target veyra_remoteplay_core_tests veyra_remoteplay_feedback_wire_tests
+          ctest --test-dir C:\rp -C Release -L offline-core --output-on-failure --timeout 30
+          ctest --test-dir C:\rp -C Release -R "remoteplay-feedback-wire" --output-on-failure --timeout 30
+
+      # The munit suite of chiaki-ng, with the fork's 20 tests (reorder queue wrap, av-reorder,
+      # packet stats), compiled by MSVC. Upstream chiaki-ng does not build its tests with MSVC,
+      # so a failure here is reported without failing the gate.
+      - name: chiaki-ng unit tests with MSVC (informative)
+        continue-on-error: true
+        env:
+          CL: /D_CRT_SECURE_NO_WARNINGS /DMINIUPNP_STATICLIB
+        run: |
+          $env:PATH = "C:\v\installed\x64-windows-static\tools\protobuf;$env:PATH"
+          cmake -S C:\chiaki-stage -B C:\chiaki-tests -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DCHIAKI_ENABLE_TESTS=ON -DCHIAKI_ENABLE_GUI=OFF -DCHIAKI_ENABLE_CLI=OFF `
+            -DCHIAKI_ENABLE_FFMPEG_DECODER=OFF -DCHIAKI_ENABLE_PI_DECODER=OFF -DCHIAKI_ENABLE_SETSU=OFF `
+            -DCHIAKI_ENABLE_STEAMDECK_NATIVE=OFF -DCHIAKI_ENABLE_STEAM_SHORTCUT=OFF -DCHIAKI_ENABLE_SPEEX=OFF `
+            -DCHIAKI_ENABLE_RUDP=OFF -DCHIAKI_USE_SYSTEM_NANOPB=OFF -DCHIAKI_USE_SYSTEM_JERASURE=OFF `
+            -DCHIAKI_USE_SYSTEM_CURL=OFF "-DCMAKE_PREFIX_PATH=$env:RP_PREFIX" "-DOPENSSL_ROOT_DIR=$env:RP_PREFIX" `
+            "-DPROTOC=$env:RP_PREFIX/tools/protobuf/protoc.exe" `
+            "-DPKG_CONFIG_EXECUTABLE=$env:RP_PREFIX/tools/pkgconf/pkgconf.exe"
+          cmake --build C:\chiaki-tests --parallel --target chiaki-unit -- -k 0
+          C:\chiaki-tests\test\chiaki-unit.exe
